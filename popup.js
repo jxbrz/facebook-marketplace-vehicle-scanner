@@ -1,5 +1,17 @@
+const CANONICAL_DASHBOARD_ORIGIN = "https://sourcing.kelmarvehiclesltd.co.uk";
+const LEGACY_DASHBOARD_ORIGIN = "https://facebook-web-filter.vercel.app";
+
+function canonicaliseLegacyDashboardUrl(parsed) {
+  if (parsed.origin !== LEGACY_DASHBOARD_ORIGIN) return parsed;
+
+  return new URL(
+    `${parsed.pathname}${parsed.search}${parsed.hash}`,
+    `${CANONICAL_DASHBOARD_ORIGIN}/`
+  );
+}
+
 const DEFAULTS = {
-  dashboardUrl: "",
+  dashboardUrl: CANONICAL_DASHBOARD_ORIGIN,
   extensionApiToken: "",
   autoLoadEnabled: true,
   autoOpenResults: true,
@@ -74,7 +86,15 @@ function getKeywords() {
 }
 
 function normaliseDashboardUrl(value) {
-  return value.trim().replace(/\/+$/, "");
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+
+  try {
+    return canonicaliseLegacyDashboardUrl(new URL(trimmed))
+      .toString()
+      .replace(/\/$/, "");
+  } catch {
+    return trimmed;
+  }
 }
 
 async function getActiveMarketplaceTab() {
@@ -113,7 +133,7 @@ async function saveSettings() {
   const token = elements.extensionApiToken.value.trim();
 
   if (!dashboardUrl) {
-    throw new Error("Enter the Vercel dashboard URL.");
+    throw new Error("Enter the hosted dashboard URL.");
   }
 
   let parsed;
@@ -228,8 +248,13 @@ function updateProgress(progress) {
 
 async function initialise() {
   const stored = await chrome.storage.local.get(DEFAULTS);
+  const dashboardUrl = normaliseDashboardUrl(stored.dashboardUrl);
 
-  elements.dashboardUrl.value = stored.dashboardUrl || "";
+  if (dashboardUrl !== stored.dashboardUrl) {
+    await chrome.storage.local.set({ dashboardUrl });
+  }
+
+  elements.dashboardUrl.value = dashboardUrl;
   elements.extensionApiToken.value = stored.extensionApiToken || "";
   elements.extensionOrigin.textContent = `chrome-extension://${chrome.runtime.id}`;
   elements.autoLoadEnabled.checked = Boolean(stored.autoLoadEnabled);
@@ -312,7 +337,10 @@ elements.openResults.addEventListener("click", async () => {
       throw new Error("No hosted results URL is available yet.");
     }
 
-    await chrome.tabs.create({ url: latestProgress.resultsUrl });
+    const resultsUrl = canonicaliseLegacyDashboardUrl(
+      new URL(latestProgress.resultsUrl)
+    ).toString();
+    await chrome.tabs.create({ url: resultsUrl });
   } catch (error) {
     elements.status.textContent = error.message || String(error);
   }

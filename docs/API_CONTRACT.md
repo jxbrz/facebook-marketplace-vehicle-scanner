@@ -1,6 +1,6 @@
 # Extension API contract
 
-Base URL: the dashboard URL configured in `chrome.storage.local`.
+Base URL: the dashboard URL configured in `chrome.storage.local`. The exact legacy production origin `https://facebook-web-filter.vercel.app` is migrated to `https://sourcing.kelmarvehiclesltd.co.uk` before request construction; authenticated requests reject redirects.
 
 Every non-preflight request sends:
 

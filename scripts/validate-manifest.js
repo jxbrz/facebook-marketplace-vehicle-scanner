@@ -16,9 +16,9 @@ const expectedHostPermissions = [
 
 assert.equal(manifest.manifest_version, 3);
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-assert.equal(manifest.version, "23.0.4");
+assert.equal(manifest.version, "23.0.5");
 assert.equal(packageJson.version, manifest.version);
-assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.4";/);
+assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.5";/);
 assert.ok(typeof manifest.key === "string" && manifest.key.length > 100);
 assert.deepEqual(manifest.permissions, expectedPermissions);
 assert.deepEqual(manifest.host_permissions, expectedHostPermissions);

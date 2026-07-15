@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.0.4";
+const EXTENSION_VERSION = "23.0.5";
 
 const CONFIG = {
   cacheTtlMs: 30 * 24 * 60 * 60 * 1000,

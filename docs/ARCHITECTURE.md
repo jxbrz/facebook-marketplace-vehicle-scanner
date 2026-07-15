@@ -31,6 +31,8 @@ Compatibility-sensitive local keys include:
 - `listing:<facebook-listing-id>` cache entries;
 - dashboard URL, API token, scan limit, filter, and category setting keys.
 
+The background worker is the single authenticated API boundary. It maps only the exact legacy Vercel production origin to `https://sourcing.kelmarvehiclesltd.co.uk`, persists that migration, constructs every `/api/extension/scans...` request from the canonical value, and rejects redirects. Popup initialization applies the same storage migration so the displayed configuration matches the runtime boundary.
+
 The active-run state's internal `version` remains `19`. Code release versions are independent of that persisted schema number.
 
 ## Phase 1 review data

@@ -10,7 +10,7 @@ Do not upload until every package/reviewer prerequisite is checked. Do not publi
 - [ ] Both repositories clean and pushed; CI green.
 - [ ] `npm run validate` passes in the extension repository.
 - [ ] Web validation (`npm ci`, lint, typecheck, tests, build) passes.
-- [ ] Manifest version `23.0.4` has never been uploaded to this Store item.
+- [ ] Manifest version `23.0.5` has never been uploaded to this Store item.
 - [ ] Manifest key retained and first-upload identity decision reviewed.
 - [ ] Permissions/host permissions match `WEB_STORE_PERMISSION_JUSTIFICATIONS.md`.
 - [ ] No remote executable code, obfuscation, credentials or debug-only files.

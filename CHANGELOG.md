@@ -1,5 +1,11 @@
 # Changelog
 
+## 23.0.5 - 2026-07-15
+
+- Migrated the exact legacy Vercel dashboard origin stored by existing installations to `https://sourcing.kelmarvehiclesltd.co.uk` before any authenticated API request or results-page navigation.
+- Made the canonical production origin the new-install default and rejected API redirects so Bearer-authenticated requests cannot depend on a hostname redirect.
+- Retained the exact legacy host permission for this staged migration release while preserving the manifest key, extension identity, scanner lifecycle, storage schema, and API authentication format.
+
 ## 23.0.4
 
 - Prepared the first Chrome Web Store package without changing scanner behavior, storage keys, API payloads, or the fixed unpacked key.

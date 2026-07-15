@@ -9,7 +9,7 @@ The current dashboard is shared dealership data and does not provide per-user is
 - exact HTTPS review dashboard origin included in the submitted manifest host permissions;
 - temporary extension API token;
 - temporary dashboard user/password;
-- the same v23.0.4 server code and schema;
+- a server deployment compatible with the v23.0.5 extension API contract and schema;
 - credentials revoked and environment removed after review.
 
 Do not give a reviewer production database access or the long-lived production API token. Creating this isolated environment and adding its exact host is a manual pre-submission blocker; do not use wildcard host permission. If an isolated environment cannot be provided, obtain human approval before using any production credentials.

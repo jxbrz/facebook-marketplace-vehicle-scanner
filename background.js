@@ -527,6 +527,17 @@ async function cancelScanInspections(runToken) {
 
 const REMOTE_REQUEST_TIMEOUT_MS = 20000;
 const MAX_REMOTE_BATCH_SIZE = 25;
+const CANONICAL_DASHBOARD_ORIGIN = "https://sourcing.kelmarvehiclesltd.co.uk";
+const LEGACY_DASHBOARD_ORIGIN = "https://facebook-web-filter.vercel.app";
+
+function canonicaliseLegacyDashboardUrl(parsed) {
+  if (parsed.origin !== LEGACY_DASHBOARD_ORIGIN) return parsed;
+
+  return new URL(
+    `${parsed.pathname}${parsed.search}${parsed.hash}`,
+    `${CANONICAL_DASHBOARD_ORIGIN}/`
+  );
+}
 
 function normaliseDashboardUrl(value) {
   const trimmed = String(value || "").trim().replace(/\/+$/, "");
@@ -547,6 +558,8 @@ function normaliseDashboardUrl(value) {
     throw new Error("Dashboard URL must use HTTPS or HTTP.");
   }
 
+  parsed = canonicaliseLegacyDashboardUrl(parsed);
+
   return parsed.toString().replace(/\/$/, "");
 }
 
@@ -558,6 +571,10 @@ async function getRemoteConfig() {
 
   const dashboardUrl = normaliseDashboardUrl(stored.dashboardUrl);
   const token = String(stored.extensionApiToken || "").trim();
+
+  if (dashboardUrl !== String(stored.dashboardUrl || "").trim().replace(/\/+$/, "")) {
+    await chrome.storage.local.set({ dashboardUrl });
+  }
 
   if (!token) {
     throw new Error("Extension API token is not configured.");
@@ -585,7 +602,7 @@ async function remoteRequest(path, options = {}) {
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
       cache: "no-store",
-      redirect: "follow",
+      redirect: "error",
       signal: controller.signal
     });
 
@@ -633,7 +650,9 @@ async function remoteRequest(path, options = {}) {
 function normaliseResultsUrl(resultsUrl, dashboardUrl, scanId) {
   if (resultsUrl) {
     try {
-      return new URL(resultsUrl, `${dashboardUrl}/`).toString();
+      return canonicaliseLegacyDashboardUrl(
+        new URL(resultsUrl, `${dashboardUrl}/`)
+      ).toString();
     } catch {
       // Fall through to the standard scan route.
     }
@@ -764,7 +783,7 @@ function openExternalUrl(url) {
     throw new Error("Only HTTP and HTTPS results URLs can be opened.");
   }
 
-  return chrome.tabs.create({ url: parsed.toString() });
+  return chrome.tabs.create({ url: canonicaliseLegacyDashboardUrl(parsed).toString() });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

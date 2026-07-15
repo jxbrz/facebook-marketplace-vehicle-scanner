@@ -42,6 +42,6 @@ Before upload confirm every capture has:
 - no unrelated tabs, DevTools, personal bookmarks/profile data or browser sync identity;
 - no claims or UI for MOT, valuation, OCR, HPI or other unimplemented features;
 - only realistic data captured from an authorised test workflow, with identifying data redacted;
-- an accurate representation of the submitted v23.0.4 build.
+- an accurate representation of the submitted v23.0.5 build.
 
 Do not fabricate screenshots. Capture them from the validated private test installation.

@@ -38,9 +38,10 @@ Google requires the narrowest permissions needed for the current purpose: <https
 
 ### `https://facebook-web-filter.vercel.app/*`
 
-- Feature: exact legacy production alias for existing installations that may still have that dashboard URL stored.
-- Data enabled and timing: identical to the custom production origin above.
-- Removal plan: remove this host in a future version only after both dealership installations confirm the custom domain is stored and the alias is no longer used.
+- Feature: staged migration compatibility for existing installations that may still have the exact legacy production URL stored when v23.0.5 first starts.
+- Runtime behavior: popup initialization and the background request boundary rewrite that exact origin to `https://sourcing.kelmarvehiclesltd.co.uk` and persist it before authenticated request construction. No v23.0.5 API request intentionally targets this permission.
+- Why retained for this release: keeping the previously reviewed exact-origin grant avoids coupling the urgent runtime fix to permission removal while dealership installations complete and verify the in-place storage migration. It is not a wildcard or a redirect fallback.
+- Removal plan: remove this host in a later reviewed release after both dealership installations confirm the canonical value is stored and no rollback/dual-host migration path remains.
 
 ## Content-script scope
 

@@ -56,7 +56,7 @@ function auditRuntimeFiles(root = process.cwd()) {
   }
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, "23.0.4");
+  assert.equal(manifest.version, "23.0.5");
   assert.equal(manifest.host_permissions.some((permission) => permission.includes("*://*/*") || permission === "https://*/*"), false);
   assert.deepEqual(Object.values(manifest.icons).sort(), EXPECTED_FILES.filter((file) => file.startsWith("icons/")).sort());
 }

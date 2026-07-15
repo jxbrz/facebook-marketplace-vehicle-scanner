@@ -8,6 +8,8 @@ function createHarness(sendMessage, overrides = {}) {
   const created = [];
   const updated = [];
   const removed = [];
+  const storageSets = [];
+  const storageValues = { ...(overrides.storageValues || {}) };
   const noOpEvent = { addListener() {}, removeListener() {} };
   const context = {
     AbortController,
@@ -31,15 +33,82 @@ function createHarness(sendMessage, overrides = {}) {
         onUpdated: noOpEvent,
         onRemoved: noOpEvent
       },
-      storage: { local: {} }
+      storage: {
+        local: {
+          async get() { return { ...storageValues }; },
+          async set(values) {
+            storageSets.push(values);
+            Object.assign(storageValues, values);
+          }
+        }
+      }
     },
     CategoryDetector: overrides.CategoryDetector || {},
     ListingDetailsExtractor: overrides.ListingDetailsExtractor || {},
     PayloadNormalizer: {}
   };
   vm.runInNewContext(fs.readFileSync("background.js", "utf8"), context);
-  return { context, created, updated, removed, runtimeListeners };
+  return { context, created, updated, removed, runtimeListeners, storageSets, storageValues };
 }
+
+test("migrates the legacy dashboard origin and sends authenticated requests directly to production", async () => {
+  const requests = [];
+  const harness = createHarness(
+    async () => ({ ok: true, result: {} }),
+    {
+      storageValues: {
+        dashboardUrl: "https://facebook-web-filter.vercel.app/",
+        extensionApiToken: "test-token"
+      },
+      fetch: async (url, options) => {
+        requests.push({ url: url.toString(), options });
+        return {
+          ok: true,
+          status: 200,
+          async text() { return "{}"; }
+        };
+      }
+    }
+  );
+
+  await harness.context.remoteRequest("/api/extension/scans", {
+    method: "POST",
+    body: { targetMatches: 1 }
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(
+    requests[0].url,
+    "https://sourcing.kelmarvehiclesltd.co.uk/api/extension/scans"
+  );
+  assert.equal(requests[0].options.redirect, "error");
+  assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+  assert.equal(harness.storageSets.length, 1);
+  assert.equal(
+    harness.storageSets[0].dashboardUrl,
+    "https://sourcing.kelmarvehiclesltd.co.uk"
+  );
+});
+
+test("leaves non-legacy configured dashboard origins unchanged", () => {
+  const harness = createHarness(async () => ({ ok: true, result: {} }));
+  assert.equal(
+    harness.context.normaliseDashboardUrl("https://review.example.test/"),
+    "https://review.example.test"
+  );
+});
+
+test("migrates legacy results URLs without changing their path", () => {
+  const harness = createHarness(async () => ({ ok: true, result: {} }));
+  assert.equal(
+    harness.context.normaliseResultsUrl(
+      "https://facebook-web-filter.vercel.app/scans/scan-123",
+      "https://sourcing.kelmarvehiclesltd.co.uk",
+      "scan-123"
+    ),
+    "https://sourcing.kelmarvehiclesltd.co.uk/scans/scan-123"
+  );
+});
 
 test("marks an inactive blank tab before navigation and always removes it after extraction", async () => {
   let resolveExtraction;

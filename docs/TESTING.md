@@ -23,6 +23,8 @@ node scripts/validate-manifest.js
 
 Lifecycle tests cover idle startup, terminal reload, explicit interrupted recovery, sync-only recovery, Start/Resume gating, cleanup wiring, and run-scoped controlled-tab cancellation. Final-category tests cover rendered descriptions, structured attributes, provisional-to-final replacement, counters, target completion, payload status, negation, mixed evidence, and timeout fallback. Identity and mileage suites retain their existing compatibility coverage.
 
+Remote-boundary tests also cover exact legacy-origin migration, direct canonical request construction, redirect rejection, Bearer-header preservation, storage rewrite, and unchanged custom dashboard origins.
+
 ## Small end-to-end manual test
 
 Use a non-sensitive Marketplace search and configure:
@@ -55,5 +57,6 @@ Expected flow:
 18. For a UK Facebook listing showing `68,600 km`, verify the dashboard displays `68,600 miles`, retains `68,600 km` as the source text, and records the label-correction provenance.
 19. Scan listings whose seller descriptions contain `Cat S`, `Cat N Many Years Ago`, and `S category`; verify each is rejected, carries category evidence, and never advances the match target.
 20. Start a new scan over any adverts affected by older classification. Confirm the old hosted rows remain unchanged while the new scan records corrected outcomes.
+21. With an installation upgraded from the legacy dashboard value, run a one-listing scan from the service-worker DevTools Network panel. Confirm the first request is directly to `https://sourcing.kelmarvehiclesltd.co.uk`, no request hits `https://facebook-web-filter.vercel.app`, no 307 occurs, and scan upload/dashboard appearance succeed without `Request origin is not allowed`.
 
 Do not delete a production scan merely to test recovery. Use a disposable local or dedicated test scan.

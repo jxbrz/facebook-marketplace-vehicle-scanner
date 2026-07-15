@@ -10,7 +10,7 @@ The extension remains a plain-JavaScript, unpacked-loadable project. There is no
 Facebook Marketplace tab
   -> content.js: discovery, limits, filtering, durable scan ledger
   -> background.js: authenticated listing fetches and bounded rendered-detail fallback
-  -> Vercel extension API: validation and lifecycle persistence
+  -> canonical production API: validation and lifecycle persistence
   -> Neon Postgres
   -> private dashboard
 ```
@@ -63,6 +63,8 @@ The token is saved only in `chrome.storage.local`. Never add it to source, `.env
 ```text
 chrome-extension://aipljeeiecdcnkbbakphcddacbbgkpmf
 ```
+
+Version 23.0.5 migrates the exact legacy `https://facebook-web-filter.vercel.app` value to the canonical production origin before any authenticated request or results-page navigation and saves the canonical value back to local storage. Other explicitly configured dashboard origins remain unchanged. Authenticated API requests reject redirects rather than forwarding the Bearer request through a hostname redirect.
 
 ## Scan lifecycle
 
