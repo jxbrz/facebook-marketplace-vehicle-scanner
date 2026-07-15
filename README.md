@@ -21,6 +21,7 @@ Facebook Marketplace tab
 - `background.js` owns controlled listing-page requests, one-at-a-time inactive detail-tab fallback, and Bearer-authenticated dashboard requests.
 - `listing-details-extractor.js` first reads bounded listing-ID/canonical-URL scoped embedded data, then extracts semantic rendered sections and listing-owned carousel images when static HTML is incomplete.
 - `category-detector.js` is a pure shared detector loaded by both extension contexts and by Node tests.
+- `listing-category-pipeline.js` performs the final trusted-evidence category gate, bounded diagnostics, and final-outcome counting.
 - `payload-normalizer.js` is the final upload-boundary normalizer and is also covered by Node tests.
 - The hosted application is authoritative for stored listings, lifecycle state, dashboard actions, and scan history. It never accesses Facebook.
 
@@ -99,6 +100,10 @@ Use **Clear local state** only after remote completion. See [docs/RECOVERY.md](d
 Detection requires a controlled category term (`cat`, `category`, or a listed misspelling) adjacent to S, N, C, or D in either direction. Separators, Unicode dashes, whitespace, and zero-width artifacts are normalized. Standalone letters and unrelated service, tax, emissions, vehicle, or licence categories do not match.
 
 Explicit `no`, `not`, `never`, and `without` are evaluated in limited local context. A later positive assertion remains decisive. Fetched-page evidence is primary when sources conflict; all positive and negated evidence is retained in limited diagnostic metadata.
+
+Version 23.0.3 treats card classification as preliminary only. After controlled rendered extraction completes or falls back, the detector runs over trusted static/rendered descriptions, structured title and vehicle attributes, and card evidence. Any final positive S/N/C/D result is rejected before ledger persistence or upload. To reprocess previously misclassified adverts, start a new scan over the same Marketplace search; existing hosted rows remain visible until deliberately cleaned up.
+
+The legacy `excludeCategories` settings key remains present for schema compatibility, but v23.0.3 always rejects positive S/N/C/D disclosures and presents those controls as fixed in the popup.
 
 This is disclosure detection, not an HPI check.
 

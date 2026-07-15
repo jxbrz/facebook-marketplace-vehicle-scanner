@@ -13,6 +13,7 @@ The hosted Next.js application authenticates extension requests, validates struc
 - `background.js`: bounded Facebook fetch queue, serialized inactive-tab rendered fallback with timeout/cleanup, and authenticated dashboard request boundary.
 - `listing-details-extractor.js`: bounded listing-ID/canonical-URL embedded traversal, semantic rendered-section extraction, and reusable media ranking. `og:image` is the final image fallback.
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
+- `listing-category-pipeline.js`: final trusted-evidence aggregation, provisional/final diagnostics, and final outcome counters.
 - `scanner-lifecycle.js`: pure persisted-state classification and explicit transition rules.
 - `vehicle-identity.js`: pure make/model normalization, controlled aliases, title-context rules, and diagnostics.
 - `payload-normalizer.js`: pure final upload normalization and validation.

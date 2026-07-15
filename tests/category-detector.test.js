@@ -4,6 +4,8 @@ const {
   CATEGORY_TERMS,
   combineDetections,
   detectCategory,
+  detectTrustedEvidence,
+  summariseCategoryResult,
   normaliseCategoryText
 } = require("../category-detector.js");
 
@@ -113,4 +115,17 @@ test("preserves conflicting evidence and chooses fetched-page evidence first", (
   assert.deepEqual(combined.detectedCategories, ["S", "N"]);
   assert.equal(combined.conflictingCategories, true);
   assert.equal(combined.evidence.length, 2);
+});
+
+test("trusted evidence aggregation is source-prioritised and bounded", () => {
+  const combined = detectTrustedEvidence([
+    { text: "Cat N", source: "facebook-card" },
+    { text: "Previously Cat S", source: "facebook-rendered-description" }
+  ]);
+  assert.equal(combined.category, "S");
+  assert.equal(combined.source, "facebook-rendered-description");
+  const diagnostic = summariseCategoryResult(combined);
+  assert.equal(diagnostic.detected, true);
+  assert.equal(diagnostic.evidence[0].matchedPhrase, "Cat S");
+  assert.equal("normalizedText" in diagnostic, false);
 });

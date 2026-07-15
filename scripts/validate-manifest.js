@@ -17,14 +17,15 @@ const expectedHostPermissions = [
 
 assert.equal(manifest.manifest_version, 3);
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-assert.equal(manifest.version, "23.0.2");
+assert.equal(manifest.version, "23.0.3");
 assert.equal(packageJson.version, manifest.version);
-assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.2";/);
+assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.3";/);
 assert.ok(typeof manifest.key === "string" && manifest.key.length > 100);
 assert.deepEqual(manifest.permissions, expectedPermissions);
 assert.deepEqual(manifest.host_permissions, expectedHostPermissions);
 assert.deepEqual(manifest.content_scripts[0].js, [
   "category-detector.js",
+  "listing-category-pipeline.js",
   "mileage-utils.js",
   "scanner-lifecycle.js",
   "vehicle-identity.js",

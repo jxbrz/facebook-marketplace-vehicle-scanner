@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.0.2";
+const EXTENSION_VERSION = "23.0.3";
 
 const CONFIG = {
   cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
@@ -399,36 +399,7 @@ function enrichVehicleIdentity(metadata, result, final = false) {
 }
 
 function combineCategoryResult(metadata, result = null) {
-  const cardDetection = CategoryDetector.detectCategory(
-    metadata.cardText || "",
-    { source: "facebook-card" }
-  );
-  let pageDetection = null;
-
-  if (result) {
-    if (Array.isArray(result.evidence)) {
-      pageDetection = result;
-    } else if (result.detected || result.match || result.context) {
-      pageDetection = CategoryDetector.detectCategory(
-        result.context || result.match || "",
-        { source: "facebook-listing-page" }
-      );
-    }
-  }
-
-  const combined = CategoryDetector.combineDetections([
-    pageDetection,
-    cardDetection
-  ]);
-
-  return {
-    ...(result || {}),
-    ...combined,
-    evidenceExcerpt:
-      result?.evidenceExcerpt ||
-      (typeof result?.evidence === "string" ? result.evidence : null) ||
-      combined.context
-  };
+  return ListingCategoryPipeline.classifyFinalCategory(metadata, result);
 }
 
 function evaluateFilters(metadata, result = null) {
@@ -525,16 +496,8 @@ function evaluateFilters(metadata, result = null) {
     };
   }
 
-  if (
-    combined.categoryDetected &&
-    settings.excludeCategories.includes(combined.category)
-  ) {
-    return {
-      rejected: true,
-      reason: `CAT ${combined.category} detected`,
-      code: "category"
-    };
-  }
+  const categoryOutcome = ListingCategoryPipeline.categoryOutcome(result);
+  if (categoryOutcome.rejected) return categoryOutcome;
 
   const lowerText = combined.cardText.toLowerCase();
 
@@ -641,12 +604,16 @@ function classifyListing(listingId, metadata, result, source) {
 }
 
 function countStates() {
+  const finalCounts = ListingCategoryPipeline.countFinalOutcomes(
+    ledgerByListingId.values(),
+    settings.targetMatches
+  );
   const counts = {
     discovered: ledgerByListingId.size,
-    processed: 0,
-    matched: 0,
-    rejected: 0,
-    unavailable: 0,
+    processed: finalCounts.processed,
+    matched: finalCounts.matched,
+    rejected: finalCounts.rejected,
+    unavailable: finalCounts.unavailable,
     queued: 0,
     scanning: 0,
     activeWork: 0,
@@ -654,14 +621,10 @@ function countStates() {
   };
 
   for (const entry of ledgerByListingId.values()) {
-    if (entry.status === "matched") counts.matched += 1;
-    if (entry.status === "rejected") counts.rejected += 1;
-    if (entry.status === "unavailable") counts.unavailable += 1;
     if (entry.status === "queued") counts.queued += 1;
     if (entry.status === "scanning") counts.scanning += 1;
   }
 
-  counts.processed = counts.matched + counts.rejected + counts.unavailable;
   counts.activeWork = counts.queued + counts.scanning;
   counts.pending = Math.max(0, counts.discovered - counts.processed);
   counts.invariantValid =
@@ -1026,6 +989,12 @@ function buildRemoteListing(entry, result = null) {
       fetchedMileage: result?.mileage ?? null,
       fetchedPrice: result?.price ?? null,
       vehicleIdentity: result?.vehicleIdentityDiagnostics || null,
+      preliminaryCategoryResult: result?.categoryClassificationDiagnostics?.preliminaryCategoryResult || null,
+      finalCategoryResult: result?.categoryClassificationDiagnostics?.finalCategoryResult || null,
+      finalCategoryEvidenceSource: result?.categoryClassificationDiagnostics?.finalCategoryEvidenceSource || null,
+      reclassifiedAfterRenderedExtraction: Boolean(result?.categoryClassificationDiagnostics?.reclassifiedAfterRenderedExtraction),
+      provisionalStatus: result?.categoryClassificationDiagnostics?.provisionalStatus || null,
+      finalStatus: result?.categoryClassificationDiagnostics?.finalStatus || entry.status,
       extractionSource: result?.extractionSource || null,
       checkedAt: result?.checkedAt || entry.processedAt || null
     },
@@ -2216,9 +2185,7 @@ async function loadSettings() {
     minPrice: normaliseNumber(stored.minPrice),
     maxPrice: normaliseNumber(stored.maxPrice),
     maxMileage: normaliseNumber(stored.maxMileage),
-    excludeCategories: Array.isArray(stored.excludeCategories)
-      ? stored.excludeCategories
-      : ["S", "N", "C", "D"],
+    excludeCategories: ["S", "N", "C", "D"],
     excludedKeywords: Array.isArray(stored.excludedKeywords)
       ? stored.excludedKeywords
       : [],

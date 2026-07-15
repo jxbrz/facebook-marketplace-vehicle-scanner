@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
-function createHarness(sendMessage) {
+function createHarness(sendMessage, overrides = {}) {
   const runtimeListeners = [];
   const created = [];
   const updated = [];
@@ -14,7 +14,7 @@ function createHarness(sendMessage) {
     URL,
     clearTimeout,
     console,
-    fetch: async () => { throw new Error("Unexpected fetch"); },
+    fetch: overrides.fetch || (async () => { throw new Error("Unexpected fetch"); }),
     importScripts() {},
     setTimeout(callback, delay) {
       if (delay < 1000) return queueMicrotask(callback);
@@ -33,8 +33,8 @@ function createHarness(sendMessage) {
       },
       storage: { local: {} }
     },
-    CategoryDetector: {},
-    ListingDetailsExtractor: {},
+    CategoryDetector: overrides.CategoryDetector || {},
+    ListingDetailsExtractor: overrides.ListingDetailsExtractor || {},
     PayloadNormalizer: {}
   };
   vm.runInNewContext(fs.readFileSync("background.js", "utf8"), context);
@@ -92,4 +92,53 @@ test("run cancellation closes its controlled tab and prevents a rendered result"
   resolveExtraction({ ok: true, result: { fullDescription: "Too late" } });
   await assert.rejects(inspection, /cancelled/);
   assert.ok(harness.removed.includes(77));
+});
+
+test("final background classification includes the rendered seller description", async () => {
+  const realExtractor = require("../listing-details-extractor.js");
+  const harness = createHarness(
+    async () => ({
+      ok: true,
+      result: {
+        fullDescription: "Cat S",
+        listingTitle: "2018 Volkswagen Polo",
+        vehicleAttributes: {},
+        imageUrls: [],
+        extractionSource: "rendered-semantic-dom"
+      }
+    }),
+    {
+      CategoryDetector: require("../category-detector.js"),
+      ListingDetailsExtractor: {
+        extractListingDetails() {
+          return {
+            fullDescription: "Well maintained",
+            listingTitle: "2018 Volkswagen Polo",
+            vehicleAttributes: {},
+            imageUrls: [],
+            extractionSource: "embedded-json",
+            structuredDetailsFound: true
+          };
+        },
+        mergeListingDetails: realExtractor.mergeListingDetails
+      },
+      fetch: async url => ({
+        ok: true,
+        url,
+        async text() {
+          return "<html><body>Marketplace listing 123 Volkswagen Polo</body></html>";
+        }
+      })
+    }
+  );
+
+  const result = await harness.context.inspectListing(
+    "https://www.facebook.com/marketplace/item/123/",
+    "run-1"
+  );
+  assert.equal(result.fullDescription, "Cat S");
+  assert.equal(result.detected, true);
+  assert.equal(result.category, "S");
+  assert.equal(result.source, "facebook-rendered-description");
+  assert.equal(result.categoryClassificationDiagnostics.reclassifiedAfterRenderedExtraction, true);
 });

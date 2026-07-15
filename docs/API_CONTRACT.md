@@ -40,6 +40,8 @@ The v23 fields are optional, so old v19-v23.0.0 payloads and restored runs remai
 
 Version 23.0.2 records detected advert make/model through the existing bounded `vehicleAttributes` and `rawMetadata.vehicleIdentity` fields rather than adding top-level API fields. Older payloads remain unchanged.
 
+Version 23.0.3 adds bounded category sequencing diagnostics inside `rawMetadata`: preliminary/final category summaries, final evidence source, rendered-reclassification flag, and provisional/final status. Positive final evidence is uploaded only with `status=rejected`, `rejectionCode=category`, and `categoryType` S/N/C/D.
+
 The UK label correction is never inferred at payload-normalization time. Historical records without provenance retain their stored units, and non-Facebook or non-GB kilometre sources are not relabelled.
 
 ### `PATCH /api/extension/scans/:scanId/progress`

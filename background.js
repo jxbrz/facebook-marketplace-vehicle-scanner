@@ -140,6 +140,13 @@ function extractCategory(text, source) {
   return CategoryDetector.detectCategory(text, { source });
 }
 
+function vehicleAttributeEvidence(attributes) {
+  return Object.entries(attributes || {})
+    .slice(0, 40)
+    .map(([label, value]) => `${String(label).slice(0, 80)}: ${String(value).slice(0, 500)}`)
+    .join("\n");
+}
+
 function extractMileage(text) {
   const candidates = [
     /\b(\d{1,3}(?:,\d{3})+)\s*(?:miles?|mi)\b/i,
@@ -326,30 +333,47 @@ async function inspectListing(url, runToken) {
 
   const html = await response.text();
   const listingId = getListingIdFromUrl(url);
-  let listingDetails = ListingDetailsExtractor.extractListingDetails(html, {
+  const staticListingDetails = ListingDetailsExtractor.extractListingDetails(html, {
     listingId,
     canonicalUrl: response.url || url
   });
-  if (listingId && ListingDetailsExtractor.needsRenderedFallback(listingDetails)) {
+  let renderedListingDetails = null;
+  let listingDetails = staticListingDetails;
+  if (listingId) {
     try {
       assertInspectionActive(runToken);
-      const renderedDetails = await queueRenderedInspection(response.url || url, listingId, runToken);
-      listingDetails = ListingDetailsExtractor.mergeListingDetails(listingDetails, renderedDetails);
+      renderedListingDetails = await queueRenderedInspection(response.url || url, listingId, runToken);
+      listingDetails = ListingDetailsExtractor.mergeListingDetails(staticListingDetails, renderedListingDetails);
     } catch {
       // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
     }
   }
   const scoped = extractScopedText(html, listingId);
 
-  let category = extractCategory(scoped.text, "facebook-listing-page");
+  const scopedCategoryText = scoped.source === "listing-id-window" ? scoped.text : "";
+  const preliminaryCategory = CategoryDetector.detectTrustedEvidence([
+    { text: scopedCategoryText, source: "facebook-listing-static-scoped" },
+    { text: staticListingDetails.fullDescription, source: "facebook-structured-description" },
+    { text: staticListingDetails.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(staticListingDetails.vehicleAttributes), source: "facebook-structured-attributes" }
+  ]);
+  const category = CategoryDetector.detectTrustedEvidence([
+    { text: scopedCategoryText, source: "facebook-listing-static-scoped" },
+    { text: staticListingDetails.fullDescription, source: "facebook-structured-description" },
+    { text: staticListingDetails.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(staticListingDetails.vehicleAttributes), source: "facebook-structured-attributes" },
+    { text: renderedListingDetails?.fullDescription, source: "facebook-rendered-description" },
+    { text: renderedListingDetails?.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(renderedListingDetails?.vehicleAttributes), source: "facebook-rendered-attributes" }
+  ]);
   let metadata = extractVehicleMetadata(scoped.text);
   let extractionSource = scoped.source;
   let extractionText = scoped.text;
   const hasCategoryEvidence = [
-    ...(category.evidence || []),
-    ...(category.negatedEvidence || []),
-    ...(category.ambiguousEvidence || []),
-    ...(category.excludedEvidence || [])
+    ...(preliminaryCategory.evidence || []),
+    ...(preliminaryCategory.negatedEvidence || []),
+    ...(preliminaryCategory.ambiguousEvidence || []),
+    ...(preliminaryCategory.excludedEvidence || [])
   ].length > 0;
 
   const scopedDataCount = [
@@ -362,7 +386,6 @@ async function inspectListing(url, runToken) {
 
   if (scopedDataCount === 0 && scoped.source === "listing-id-window") {
     extractionText = normaliseForDetection(html);
-    category = extractCategory(extractionText, "facebook-listing-page");
     metadata = extractVehicleMetadata(extractionText);
     extractionSource = "full-response-fallback";
   }
@@ -378,6 +401,18 @@ async function inspectListing(url, runToken) {
     evidenceExcerpt,
     extractionSource,
     listingDetailExtractionSource: listingDetails.extractionSource,
+    categoryClassificationDiagnostics: {
+      preliminaryCategoryResult: CategoryDetector.summariseCategoryResult(preliminaryCategory),
+      finalCategoryResult: CategoryDetector.summariseCategoryResult(category),
+      finalCategoryEvidenceSource: category.source || null,
+      reclassifiedAfterRenderedExtraction: Boolean(
+        !preliminaryCategory.detected &&
+        category.detected &&
+        category.evidence?.some(item => ["facebook-rendered-description", "facebook-rendered-attributes"].includes(item.source))
+      ),
+      provisionalStatus: preliminaryCategory.detected ? "rejected" : "matched",
+      finalStatus: category.detected ? "rejected" : "matched"
+    },
     scopeLength: extractionText.length,
     finalUrl: response.url,
     responseLength: html.length,

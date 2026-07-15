@@ -508,11 +508,11 @@
     const preferEmbeddedImages = embedded?.structuredDetailsFound && embeddedImages.length > 1;
     const imageUrls = [...new Set(preferEmbeddedImages ? [...embeddedImages, ...renderedImages] : [...renderedImages, ...embeddedImages])].slice(0, LIMITS.imageCount);
     return {
-      fullDescription: embedded?.fullDescription || rendered.fullDescription || null,
+      fullDescription: rendered.fullDescription || embedded?.fullDescription || null,
       listingTitle: embedded?.listingTitle || rendered.listingTitle || null,
       primaryImageUrl: preferEmbeddedImages ? embedded?.primaryImageUrl : rendered.primaryImageUrl || embedded?.primaryImageUrl || null,
       imageUrls,
-      vehicleAttributes: { ...(rendered.vehicleAttributes || {}), ...(embedded?.vehicleAttributes || {}) },
+      vehicleAttributes: { ...(embedded?.vehicleAttributes || {}), ...(rendered.vehicleAttributes || {}) },
       mileageDetail: embedded?.mileageDetail || rendered.mileageDetail || null,
       transmission: embedded?.transmission || rendered.transmission || null,
       fuelType: embedded?.fuelType || rendered.fuelType || null,

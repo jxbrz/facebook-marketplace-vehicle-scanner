@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Facebook Marketplace Vehicle Scanner v23.0.2",
-  "version": "23.0.2",
+  "name": "Facebook Marketplace Vehicle Scanner v23.0.3",
+  "version": "23.0.3",
   "description": "Stable-identity Marketplace scanner with Vercel dashboard integration and upgrade-safe local settings.",
   "permissions": [
     "storage",
@@ -27,6 +27,7 @@
       ],
       "js": [
         "category-detector.js",
+        "listing-category-pipeline.js",
         "mileage-utils.js",
         "scanner-lifecycle.js",
         "vehicle-identity.js",

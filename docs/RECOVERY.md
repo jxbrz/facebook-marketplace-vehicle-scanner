@@ -2,7 +2,9 @@
 
 ## Durable state
 
-An active hosted run is stored in `chrome.storage.local` under `scannerV19:activeRun`. It includes the remote scan reference, settings snapshot, lifecycle timestamps, finalization state, ledger, fetched results, pending uploads, and filter fingerprint. The key and state schema version remain `scannerV19`/`19` in v23.0.2; lifecycle fields are additive.
+An active hosted run is stored in `chrome.storage.local` under `scannerV19:activeRun`. It includes the remote scan reference, settings snapshot, lifecycle timestamps, finalization state, ledger, fetched results, pending uploads, and filter fingerprint. The key and state schema version remain `scannerV19`/`19` in v23.0.3; lifecycle and diagnostic fields are additive.
+
+Already-final historical listings are never silently reclassified. Start a new scan over the affected Marketplace search to deliberately reprocess current adverts with the v23.0.3 final-evidence classifier.
 
 Final listing results are also cached as `listing:<id>` entries for 30 days. Configuration and the API token use their established top-level keys.
 

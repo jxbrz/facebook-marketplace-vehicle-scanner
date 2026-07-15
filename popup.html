@@ -13,7 +13,7 @@
         <h1>Vehicle Scanner</h1>
         <p>Controlled Facebook scanning with hosted results.</p>
       </div>
-      <span class="version">v23.0.2</span>
+      <span class="version">v23.0.3</span>
     </header>
 
     <section class="progress-card">
@@ -132,13 +132,14 @@
     </section>
 
     <section>
-      <h2>Exclude insurance categories</h2>
+      <h2>Insurance categories</h2>
       <div class="category-grid">
-        <label><input class="category" type="checkbox" value="S"> Cat S</label>
-        <label><input class="category" type="checkbox" value="N"> Cat N</label>
-        <label><input class="category" type="checkbox" value="C"> Cat C</label>
-        <label><input class="category" type="checkbox" value="D"> Cat D</label>
+        <label><input class="category" type="checkbox" value="S" checked disabled> Cat S</label>
+        <label><input class="category" type="checkbox" value="N" checked disabled> Cat N</label>
+        <label><input class="category" type="checkbox" value="C" checked disabled> Cat C</label>
+        <label><input class="category" type="checkbox" value="D" checked disabled> Cat D</label>
       </div>
+      <p class="section-note">Positive Cat S, N, C or D disclosures are always rejected after final evidence extraction.</p>
     </section>
 
     <section>

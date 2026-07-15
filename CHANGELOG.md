@@ -1,5 +1,13 @@
 # Changelog
 
+## 23.0.3 - 2026-07-15
+
+- Re-ran insurance-category classification over final trusted evidence after controlled rendered extraction and merge, including final descriptions, structured titles, vehicle attributes, and card evidence.
+- Prevented provisional card acceptance from becoming durable before the final category gate; final rejected outcomes now drive counters, target completion, persistence, and uploads.
+- Added bounded preliminary/final category diagnostics and preserved rendered evidence without storing page HTML.
+- Attempted controlled rendered extraction for every listing ID, with safe static/card fallback after timeout or failure.
+- Documented deliberate rescan as the safe reprocessing path; existing historical rows are not mutated automatically.
+
 ## 23.0.2 - 2026-07-15
 
 - Changed startup to strict idle-first behavior: persisted running work becomes `interrupted` and requires explicit Resume or Discard instead of auto-resuming discovery or scrolling.

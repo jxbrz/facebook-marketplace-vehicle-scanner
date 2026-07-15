@@ -36,13 +36,21 @@
   const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/u;
   const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
   const SOURCE_STRENGTH = new Map([
-    ["facebook-listing-page", 0],
-    ["listing-id-window", 0],
-    ["full-response", 1],
-    ["full-response-fallback", 1],
-    ["facebook-card", 2],
-    ["cached-listing-result", 3]
+    ["facebook-rendered-description", 0],
+    ["facebook-final-description", 0],
+    ["facebook-rendered-attributes", 1],
+    ["facebook-structured-description", 1],
+    ["facebook-structured-attributes", 1],
+    ["facebook-structured-title", 2],
+    ["facebook-listing-static-scoped", 2],
+    ["facebook-listing-page", 2],
+    ["listing-id-window", 2],
+    ["facebook-card-title", 3],
+    ["facebook-card", 3],
+    ["cached-listing-result", 4]
   ]);
+  const MAX_EVIDENCE_PER_DISPOSITION = 20;
+  const MAX_TRUSTED_SOURCE_TEXT = 25000;
 
   function normaliseCategoryText(value) {
     const original = String(value ?? "");
@@ -240,10 +248,10 @@
   }
 
   function resultFromEvidence(evidence, source, normalisedText) {
-    const positiveEvidence = evidence.filter(item => item.disposition === "positive");
-    const negatedEvidence = evidence.filter(item => item.disposition === "negated");
-    const ambiguousEvidence = evidence.filter(item => item.disposition === "ambiguous");
-    const excludedEvidence = evidence.filter(item => item.disposition === "excluded");
+    const positiveEvidence = evidence.filter(item => item.disposition === "positive").slice(0, MAX_EVIDENCE_PER_DISPOSITION);
+    const negatedEvidence = evidence.filter(item => item.disposition === "negated").slice(0, MAX_EVIDENCE_PER_DISPOSITION);
+    const ambiguousEvidence = evidence.filter(item => item.disposition === "ambiguous").slice(0, MAX_EVIDENCE_PER_DISPOSITION);
+    const excludedEvidence = evidence.filter(item => item.disposition === "excluded").slice(0, MAX_EVIDENCE_PER_DISPOSITION);
     const primary = positiveEvidence[0] ?? null;
     const detectedCategories = [...new Set(positiveEvidence.map(item => item.category))];
 
@@ -300,10 +308,51 @@
     );
   }
 
+  function detectTrustedEvidence(sources) {
+    const detections = [];
+    for (const candidate of Array.isArray(sources) ? sources : []) {
+      const text = typeof candidate?.text === "string"
+        ? candidate.text.trim().slice(0, MAX_TRUSTED_SOURCE_TEXT)
+        : "";
+      if (!text) continue;
+      detections.push(detectCategory(text, { source: candidate.source || "unknown" }));
+    }
+    return combineDetections(detections);
+  }
+
+  function summariseCategoryResult(result) {
+    const boundedEvidence = name => (Array.isArray(result?.[name]) ? result[name] : [])
+      .slice(0, 10)
+      .map(item => ({
+        category: item.category,
+        matchedPhrase: String(item.matchedPhrase || "").slice(0, 120),
+        context: String(item.context || "").slice(0, 600),
+        normalizedMatch: item.normalizedMatch,
+        source: item.source,
+        detectorRule: item.detectorRule,
+        disposition: item.disposition,
+        diagnosticReason: item.diagnosticReason || null
+      }));
+    return {
+      detected: Boolean(result?.detected),
+      category: result?.category || null,
+      matchedPhrase: result?.match || null,
+      source: result?.source || null,
+      detectorRule: result?.detectorRule || null,
+      detectedCategories: Array.isArray(result?.detectedCategories)
+        ? result.detectedCategories.slice(0, 4)
+        : [],
+      evidence: boundedEvidence("evidence"),
+      negatedEvidence: boundedEvidence("negatedEvidence")
+    };
+  }
+
   return {
     CATEGORY_TERMS: [...CATEGORY_TERMS],
     combineDetections,
     detectCategory,
+    detectTrustedEvidence,
+    summariseCategoryResult,
     normaliseCategoryText
   };
 });

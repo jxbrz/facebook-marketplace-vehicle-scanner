@@ -10,6 +10,7 @@ $runtimeFiles = @(
   "background.js",
   "content.js",
   "category-detector.js",
+  "listing-category-pipeline.js",
   "mileage-utils.js",
   "scanner-lifecycle.js",
   "vehicle-identity.js",

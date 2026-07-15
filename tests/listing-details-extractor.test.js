@@ -135,7 +135,7 @@ test("deduplicates repeated carousel URLs even when their rendered identities ch
   assert.deepEqual(result.imageUrls, ["https://scontent-lhr8-1.xx.fbcdn.net/repeated.jpg"]);
 });
 
-test("uses rendered details only to fill missing static fields and degrades safely", () => {
+test("lets final rendered details replace static fallbacks and degrades safely", () => {
   const embedded = extractListingDetails(fixture({ id: "123", description: { text: "Embedded wins" } }), { listingId: "123" });
   const emptyRendered = extractRenderedSnapshotDetails(null);
   assert.equal(needsRenderedFallback(embedded), true);
@@ -147,6 +147,6 @@ test("uses rendered details only to fill missing static fields and degrades safe
     fullDescription: "Rendered replacement",
     mileageDetail: { value: 68600, unit: "km", originalText: "68,600 km" }
   });
-  assert.equal(merged.fullDescription, "Embedded wins");
+  assert.equal(merged.fullDescription, "Rendered replacement");
   assert.deepEqual(merged.mileageDetail, { value: 68600, unit: "km", originalText: "68,600 km" });
 });

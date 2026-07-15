@@ -248,9 +248,8 @@ async function initialise() {
   elements.acceptedModels.value = VehicleIdentity.normaliseFilterValues(stored.acceptedModels).join(", ");
   elements.excludedKeywords.value = (stored.excludedKeywords ?? []).join("\n");
 
-  const selected = new Set(stored.excludeCategories ?? ["S", "N", "C", "D"]);
   for (const input of document.querySelectorAll(".category")) {
-    input.checked = selected.has(input.value);
+    input.checked = true;
   }
 
   updateProgress(stored.runtimeProgress);
