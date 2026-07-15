@@ -1,0 +1,5 @@
+Facebook Marketplace Vehicle Scanner
+Stable extension ID: aipljeeiecdcnkbbakphcddacbbgkpmf
+Allowed extension origin: chrome-extension://aipljeeiecdcnkbbakphcddacbbgkpmf
+
+Keep the manifest.json key unchanged in every future version.

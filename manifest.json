@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Facebook Marketplace Vehicle Scanner v22",
+  "version": "22.0.0",
+  "description": "Stable-identity Marketplace scanner with Vercel dashboard integration and upgrade-safe local settings.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://facebook.com/*",
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/marketplace*",
+        "https://www.facebook.com/marketplace/*",
+        "https://facebook.com/marketplace*",
+        "https://facebook.com/marketplace/*"
+      ],
+      "js": [
+        "category-detector.js",
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Marketplace Vehicle Scanner"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAolBlDeXmp8nhMYkVN64HN7ekUonx9gMi2SFh23U06EVh0tNlTehmkc/LDXqt0+Z4e4rU8FS9tBeh0kgIfc1aVkwf6vMPP/8SG7Mua8vRtmpCGpo2KBig6DdHWisJjq6Xs0ZxjziH4XsJ9qM/RYtLf6KpeCCHoCpMLGA23WJjBF+YJnjJ6diuTbtHgidfvWjPEYzZvFc3ciBjeui0S9NS+krZygMnFUdFQlG1B+B/0vv9IJXP5p2XSbEbX2YXfHPl8d5j0s4FfarkD0XN04JfK02zv/zvh456GSX3ASFINkEdP9ixxdqTTDK2FFPS4tU3hOMM5ED6GRPdjs0ey+F9twIDAQAB"
+}

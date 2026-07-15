@@ -1,0 +1,29 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and generated output
+node_modules/
+coverage/
+dist/
+build/
+artifacts/
+*.zip
+*.crx
+
+# Local working files
+screenshots/
+tmp/
+temp/
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor and Chrome profile data
+.idea/
+.vscode/
+chrome-profile/
+Default/
