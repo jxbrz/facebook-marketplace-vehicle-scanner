@@ -1,5 +1,11 @@
 # Changelog
 
+## 23.0.4
+
+- Prepared the first Chrome Web Store package without changing scanner behavior, storage keys, API payloads, or the fixed unpacked key.
+- Replaced the broad all-HTTPS host grant with exact Facebook and production dashboard hosts.
+- Added local extension icons, a narrow store-facing name/description, support homepage, strict package audit, and submission documentation.
+
 ## 23.0.3 - 2026-07-15
 
 - Re-ran insurance-category classification over final trusted evidence after controlled rendered extraction and merge, including final descriptions, structured titles, vehicle attributes, and card evidence.

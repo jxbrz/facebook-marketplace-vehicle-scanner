@@ -1,6 +1,6 @@
 # Facebook Marketplace Vehicle Scanner
 
-Private Chrome Manifest V3 extension that discovers vehicle listings on Facebook Marketplace, classifies them locally, and uploads structured outcomes to a private hosted dashboard.
+Private Chrome Manifest V3 extension that discovers vehicle listings on Facebook Marketplace, classifies them locally, and uploads structured outcomes to the Kelmar Vehicles Ltd sourcing dashboard.
 
 The extension remains a plain-JavaScript, unpacked-loadable project. There is no bundler, build step, TypeScript conversion, Facebook credential storage, or server-side Facebook scraping.
 
@@ -54,7 +54,7 @@ The fixed manifest key preserves identity across in-place releases. It must neve
 
 Open the popup and enter:
 
-- dashboard URL, normally `https://facebook-web-filter.vercel.app`;
+- dashboard URL, normally `https://sourcing.kelmarvehiclesltd.co.uk`;
 - the private extension API token configured on the server;
 - scan limits, filters, and category preferences.
 
@@ -114,6 +114,8 @@ Node.js 20 or newer is sufficient; there are no package dependencies.
 ```powershell
 npm run validate
 ```
+
+Chrome Web Store submission material, identity migration safeguards, permission/privacy declarations and reviewer guidance are in `docs/WEB_STORE_*.md` and `docs/CHROME_WEB_STORE_LISTING.md`. Build the strict runtime-only submission archive with `npm run package:web-store`; this does not upload or publish it.
 
 This runs syntax checks, detector and payload tests, manifest validation, permission checks, version checks, and fixed-ID derivation. Individual commands are described in [docs/TESTING.md](docs/TESTING.md).
 

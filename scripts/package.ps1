@@ -20,6 +20,7 @@ $runtimeFiles = @(
   "popup.js",
   "popup.css",
   "styles.css",
+  "icons",
   "README.md",
   "CHANGELOG.md",
   "STABLE_EXTENSION_ID.txt"

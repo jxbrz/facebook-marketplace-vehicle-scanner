@@ -10,16 +10,15 @@ const expectedPermissions = ["storage", "tabs"];
 const expectedHostPermissions = [
   "https://www.facebook.com/*",
   "https://facebook.com/*",
-  "https://*/*",
-  "http://localhost/*",
-  "http://127.0.0.1/*"
+  "https://sourcing.kelmarvehiclesltd.co.uk/*",
+  "https://facebook-web-filter.vercel.app/*"
 ];
 
 assert.equal(manifest.manifest_version, 3);
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-assert.equal(manifest.version, "23.0.3");
+assert.equal(manifest.version, "23.0.4");
 assert.equal(packageJson.version, manifest.version);
-assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.3";/);
+assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.4";/);
 assert.ok(typeof manifest.key === "string" && manifest.key.length > 100);
 assert.deepEqual(manifest.permissions, expectedPermissions);
 assert.deepEqual(manifest.host_permissions, expectedHostPermissions);
@@ -52,4 +51,8 @@ const extensionId = [...digest]
 
 assert.equal(extensionId, expectedId);
 assert.equal(JSON.stringify(manifest).includes("extensionApiToken"), false);
+assert.equal(manifest.name, "Kelmar Vehicle Scanner");
+assert.equal(manifest.homepage_url, "https://sourcing.kelmarvehiclesltd.co.uk/support");
+assert.deepEqual(Object.keys(manifest.icons), ["16", "32", "48", "128"]);
+for (const icon of Object.values(manifest.icons)) assert.equal(fs.existsSync(icon), true, `Missing ${icon}`);
 console.log(`Manifest valid: v${manifest.version}, extension ID ${extensionId}`);
