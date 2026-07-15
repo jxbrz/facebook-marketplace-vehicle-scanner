@@ -8,6 +8,9 @@ const RENDERED_INSPECTION_TIMEOUT_MS = 12000;
 const pendingJobs = [];
 const jobsByUrl = new Map();
 const controlledDetailTabIds = new Set();
+const controlledDetailTabTokens = new Map();
+const cancelledInspectionTokens = new Set();
+const inspectionControllersByToken = new Map();
 
 let activeRequests = 0;
 let lastRequestStartedAt = 0;
@@ -43,9 +46,10 @@ function waitForTabComplete(tabId) {
   });
 }
 
-async function requestRenderedDetails(tabId, listingId) {
+async function requestRenderedDetails(tabId, listingId, runToken) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
+    assertInspectionActive(runToken);
     try {
       const response = await chrome.tabs.sendMessage(tabId, {
         type: "EXTRACT_RENDERED_LISTING_DETAILS",
@@ -54,6 +58,7 @@ async function requestRenderedDetails(tabId, listingId) {
       if (!response?.ok) throw new Error(response?.error || "Rendered extractor returned no result.");
       return response.result;
     } catch (error) {
+      assertInspectionActive(runToken);
       lastError = error;
       await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -61,26 +66,38 @@ async function requestRenderedDetails(tabId, listingId) {
   throw lastError || new Error("Rendered extractor was unavailable.");
 }
 
-async function inspectRenderedListing(url, listingId) {
+function assertInspectionActive(runToken) {
+  if (runToken && cancelledInspectionTokens.has(runToken)) {
+    throw new Error("Listing inspection was cancelled.");
+  }
+}
+
+async function inspectRenderedListing(url, listingId, runToken) {
   let tabId = null;
   try {
+    assertInspectionActive(runToken);
     const tab = await chrome.tabs.create({ url: "about:blank", active: false });
     if (!Number.isInteger(tab.id)) throw new Error("Rendered inspection tab was not created.");
     tabId = tab.id;
     controlledDetailTabIds.add(tabId);
+    controlledDetailTabTokens.set(tabId, runToken || null);
     await chrome.tabs.update(tabId, { url });
     await waitForTabComplete(tabId);
-    return await requestRenderedDetails(tabId, listingId);
+    assertInspectionActive(runToken);
+    const result = await requestRenderedDetails(tabId, listingId, runToken);
+    assertInspectionActive(runToken);
+    return result;
   } finally {
     if (tabId !== null) {
       controlledDetailTabIds.delete(tabId);
+      controlledDetailTabTokens.delete(tabId);
       await chrome.tabs.remove(tabId).catch(() => {});
     }
   }
 }
 
-function queueRenderedInspection(url, listingId) {
-  const inspection = renderedInspectionChain.then(() => inspectRenderedListing(url, listingId));
+function queueRenderedInspection(url, listingId, runToken) {
+  const inspection = renderedInspectionChain.then(() => inspectRenderedListing(url, listingId, runToken));
   renderedInspectionChain = inspection.catch(() => {});
   return inspection;
 }
@@ -269,8 +286,13 @@ function buildEvidence(text, matchText) {
   return text.slice(start, end).replace(/\s+/g, " ").trim();
 }
 
-async function fetchWithTimeout(url) {
+async function fetchWithTimeout(url, runToken) {
   const controller = new AbortController();
+  if (runToken) {
+    const controllers = inspectionControllersByToken.get(runToken) || new Set();
+    controllers.add(controller);
+    inspectionControllersByToken.set(runToken, controllers);
+  }
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
@@ -286,11 +308,17 @@ async function fetchWithTimeout(url) {
     });
   } finally {
     clearTimeout(timeout);
+    if (runToken) {
+      const controllers = inspectionControllersByToken.get(runToken);
+      controllers?.delete(controller);
+      if (!controllers?.size) inspectionControllersByToken.delete(runToken);
+    }
   }
 }
 
-async function inspectListing(url) {
-  const response = await fetchWithTimeout(url);
+async function inspectListing(url, runToken) {
+  assertInspectionActive(runToken);
+  const response = await fetchWithTimeout(url, runToken);
 
   if (!response.ok) {
     throw new Error(`Facebook returned HTTP ${response.status}`);
@@ -304,7 +332,8 @@ async function inspectListing(url) {
   });
   if (listingId && ListingDetailsExtractor.needsRenderedFallback(listingDetails)) {
     try {
-      const renderedDetails = await queueRenderedInspection(response.url || url, listingId);
+      assertInspectionActive(runToken);
+      const renderedDetails = await queueRenderedInspection(response.url || url, listingId, runToken);
       listingDetails = ListingDetailsExtractor.mergeListingDetails(listingDetails, renderedDetails);
     } catch {
       // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
@@ -339,6 +368,7 @@ async function inspectListing(url) {
   }
 
   const evidenceExcerpt = buildEvidence(extractionText, category.match);
+  assertInspectionActive(runToken);
 
   return {
     ...category,
@@ -381,7 +411,7 @@ function pumpQueue() {
     activeRequests += 1;
     lastRequestStartedAt = Date.now();
 
-    inspectListing(job.url)
+    inspectListing(job.url, job.runToken)
       .then(result => {
         for (const listener of job.listeners) {
           listener.resolve(result);
@@ -394,15 +424,20 @@ function pumpQueue() {
       })
       .finally(() => {
         activeRequests -= 1;
-        jobsByUrl.delete(job.url);
+        jobsByUrl.delete(job.key);
         schedulePump();
       });
   }
 }
 
-function queueInspection(url, priority = 0) {
+function queueInspection(url, priority = 0, runToken = null) {
   return new Promise((resolve, reject) => {
-    const existing = jobsByUrl.get(url);
+    if (runToken && cancelledInspectionTokens.has(runToken)) {
+      reject(new Error("Listing inspection was cancelled."));
+      return;
+    }
+    const key = `${runToken || "legacy"}:${url}`;
+    const existing = jobsByUrl.get(key);
 
     if (existing) {
       existing.listeners.push({ resolve, reject });
@@ -416,17 +451,43 @@ function queueInspection(url, priority = 0) {
     }
 
     const job = {
+      key,
       url,
+      runToken,
       priority,
       listeners: [{ resolve, reject }],
       started: false
     };
 
-    jobsByUrl.set(url, job);
+    jobsByUrl.set(key, job);
     pendingJobs.push(job);
     pendingJobs.sort((a, b) => b.priority - a.priority);
     schedulePump();
   });
+}
+
+async function cancelScanInspections(runToken) {
+  if (!runToken) return { cancelledJobs: 0, closedTabs: 0 };
+  cancelledInspectionTokens.add(runToken);
+  for (const controller of inspectionControllersByToken.get(runToken) || []) controller.abort();
+  inspectionControllersByToken.delete(runToken);
+  while (cancelledInspectionTokens.size > 100) {
+    cancelledInspectionTokens.delete(cancelledInspectionTokens.values().next().value);
+  }
+  let cancelledJobs = 0;
+  for (let index = pendingJobs.length - 1; index >= 0; index -= 1) {
+    const job = pendingJobs[index];
+    if (job.runToken !== runToken || job.started) continue;
+    pendingJobs.splice(index, 1);
+    jobsByUrl.delete(job.key);
+    for (const listener of job.listeners) listener.reject(new Error("Listing inspection was cancelled."));
+    cancelledJobs += 1;
+  }
+  const tabIds = [...controlledDetailTabTokens.entries()]
+    .filter(([, token]) => token === runToken)
+    .map(([tabId]) => tabId);
+  await Promise.all(tabIds.map(tabId => chrome.tabs.remove(tabId).catch(() => {})));
+  return { cancelledJobs, closedTabs: tabIds.length };
 }
 
 const REMOTE_REQUEST_TIMEOUT_MS = 20000;
@@ -688,8 +749,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "INSPECT_LISTING" && message.url) {
     return respond(
-      queueInspection(message.url, Number(message.priority) || 0)
+      queueInspection(message.url, Number(message.priority) || 0, message.runToken || null)
     );
+  }
+
+  if (message?.type === "CANCEL_SCAN_INSPECTIONS") {
+    return respond(cancelScanInspections(message.runToken));
   }
 
   if (message?.type === "IS_CONTROLLED_DETAIL_TAB") {

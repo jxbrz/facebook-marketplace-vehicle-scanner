@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "22.0.0";
+const EXTENSION_VERSION = "23.0.2";
 
 const CONFIG = {
   cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
@@ -34,7 +34,9 @@ const DEFAULT_SETTINGS = {
   maxMileage: null,
   unknownMileagePolicy: "keep",
   excludeCategories: ["S", "N", "C", "D"],
-  excludedKeywords: []
+  excludedKeywords: [],
+  acceptedMakes: [],
+  acceptedModels: []
 };
 
 const FINAL_LISTING_STATUSES = new Set([
@@ -56,7 +58,10 @@ let scanStartedAt = null;
 let scanCompletedAt = null;
 let scanDeadlineAt = null;
 let scanStatus = "idle";
+let lifecycleState = "idle";
+let historicalScanStatus = null;
 let stopReason = null;
+let runToken = null;
 let remoteRun = null;
 let remoteCompleted = false;
 let remoteSyncState = "idle";
@@ -80,9 +85,51 @@ let scrollTimer = null;
 let uploadInFlight = false;
 let progressSyncInFlight = false;
 let completionInFlight = false;
-let progressStorageTimer = null;
 let latestRuntimeProgress = null;
 let panelElements = null;
+let observerConnected = false;
+let lifecycleDiagnostics = [];
+const scanDelayWaits = new Set();
+
+function recordLifecycleDiagnostic(event, details = {}) {
+  const entry = {
+    at: new Date().toISOString(),
+    event: String(event).slice(0, 80),
+    lifecycleState,
+    scanStatus,
+    ...Object.fromEntries(
+      Object.entries(details).slice(0, 8).map(([key, value]) => [
+        String(key).slice(0, 40),
+        typeof value === "string" ? value.slice(0, 120) : Boolean(value)
+      ])
+    )
+  };
+  lifecycleDiagnostics = [...lifecycleDiagnostics, entry].slice(-30);
+  console.info("Marketplace Vehicle Scanner lifecycle:", entry);
+}
+
+function scanIsRunning() {
+  return scanningActive && ScannerLifecycle.permitsScanningActivity(lifecycleState);
+}
+
+function waitForScanDelay(milliseconds) {
+  return new Promise(resolve => {
+    const wait = { timer: null, resolve };
+    wait.timer = setTimeout(() => {
+      scanDelayWaits.delete(wait);
+      resolve();
+    }, milliseconds);
+    scanDelayWaits.add(wait);
+  });
+}
+
+function cancelScanDelays() {
+  for (const wait of scanDelayWaits) {
+    clearTimeout(wait.timer);
+    wait.resolve();
+  }
+  scanDelayWaits.clear();
+}
 
 function getRouteKey() {
   return `${location.pathname}${location.search}`;
@@ -324,11 +371,31 @@ function getFilterFingerprint() {
     maxMileage: settings.maxMileage,
     unknownMileagePolicy: settings.unknownMileagePolicy,
     excludeCategories: [...settings.excludeCategories].sort(),
+    acceptedMakes: settings.acceptedMakes.map(VehicleIdentity.normaliseKey).sort(),
+    acceptedModels: settings.acceptedModels.map(VehicleIdentity.normaliseKey).sort(),
     excludedKeywords: settings.excludedKeywords
       .map(value => String(value).trim().toLowerCase())
       .filter(Boolean)
       .sort()
   });
+}
+
+function enrichVehicleIdentity(metadata, result, final = false) {
+  const identity = VehicleIdentity.evaluateFilters(settings, {
+    structuredMake: result?.detectedMake,
+    structuredModel: result?.detectedModel,
+    listingTitle: result?.listingTitle,
+    vehicleAttributes: result?.vehicleAttributes,
+    cardTitle: metadata.title
+  }, { final });
+  return {
+    ...(result || {}),
+    detectedMake: identity.detectedMake,
+    detectedModel: identity.detectedModel,
+    makeModelSource: identity.source,
+    vehicleIdentityDiagnostics: identity.diagnostics,
+    identityFilterDecision: identity
+  };
 }
 
 function combineCategoryResult(metadata, result = null) {
@@ -450,6 +517,14 @@ function evaluateFilters(metadata, result = null) {
     }
   }
 
+  if (result?.identityFilterDecision?.rejectionCode) {
+    return {
+      rejected: true,
+      reason: result.identityFilterDecision.reason,
+      code: result.identityFilterDecision.rejectionCode
+    };
+  }
+
   if (
     combined.categoryDetected &&
     settings.excludeCategories.includes(combined.category)
@@ -546,7 +621,11 @@ function markFinal(listingId, status, options = {}) {
 }
 
 function classifyListing(listingId, metadata, result, source) {
-  const combinedResult = combineCategoryResult(metadata, result);
+  const combinedResult = enrichVehicleIdentity(
+    metadata,
+    combineCategoryResult(metadata, result),
+    true
+  );
   const evaluation = evaluateFilters(metadata, combinedResult);
   const status = evaluation.rejected ? "rejected" : "matched";
 
@@ -616,6 +695,10 @@ function getRuntimeProgress() {
   return {
     ...counts,
     scanningActive,
+    executionState: scanIsRunning() ? "running" : "idle",
+    lifecycleState,
+    historicalScanStatus,
+    interrupted: lifecycleState === "interrupted",
     autoLoadingActive,
     targetMatches: settings.targetMatches,
     maximumProcessed: settings.maximumProcessed,
@@ -641,7 +724,8 @@ function getRuntimeProgress() {
     startedAt: scanStartedAt,
     completedAt: scanCompletedAt,
     updatedAt: Date.now(),
-    invariantValid: counts.invariantValid
+    invariantValid: counts.invariantValid,
+    lifecycleDiagnostics
   };
 }
 
@@ -650,14 +734,11 @@ function updateProgress() {
   latestRuntimeProgress = progress;
   renderPanel(progress);
 
-  clearTimeout(progressStorageTimer);
-  progressStorageTimer = setTimeout(() => {
-    chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress });
-  }, 180);
+  chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress }).catch(() => {});
 }
 
 function getTerminalCondition() {
-  if (!scanningActive || scanFinalised) return null;
+  if (!scanIsRunning() || scanFinalised) return null;
 
   const counts = countStates();
 
@@ -806,7 +887,8 @@ async function inspectListing(url, priority) {
   return sendBackground({
     type: "INSPECT_LISTING",
     url,
-    priority
+    priority,
+    runToken
   });
 }
 
@@ -843,6 +925,10 @@ function getMileageForFilter(metadata, result) {
 
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
+  const vehicleAttributes = { ...(result?.vehicleAttributes || {}) };
+  if (result?.detectedMake) vehicleAttributes["Advert make"] = truncate(result.detectedMake, 80);
+  if (result?.detectedModel) vehicleAttributes["Advert model"] = truncate(result.detectedModel, 80);
+  if (result?.makeModelSource) vehicleAttributes["Advert make/model source"] = truncate(result.makeModelSource, 80);
   const mileageValue = toNullableNonNegativeInteger(result?.mileageDetail?.value);
   const mileageUnit = ["mi", "km"].includes(result?.mileageDetail?.unit)
     ? result.mileageDetail.unit
@@ -874,7 +960,7 @@ function buildRemoteListing(entry, result = null) {
   return {
     externalListingId: entry.listingId,
     sourceUrl: entry.url,
-    title: metadata.title || null,
+    title: result?.listingTitle || metadata.title || null,
     price: metadata.price ?? result?.price ?? null,
     currency: "GBP",
     year: metadata.year ?? result?.year ?? null,
@@ -899,7 +985,7 @@ function buildRemoteListing(entry, result = null) {
         ? truncate(result.context, 600)
         : null,
     fullDescription: result?.fullDescription || null,
-    vehicleAttributes: result?.vehicleAttributes || {},
+    vehicleAttributes,
     sellerName: result?.sellerName || null,
     sellerProfileUrl: result?.sellerProfileUrl || null,
     listedAtText: result?.listedAtText || null,
@@ -924,6 +1010,7 @@ function buildRemoteListing(entry, result = null) {
       fetchedYear: result?.year ?? null,
       fetchedMileage: result?.mileage ?? null,
       fetchedPrice: result?.price ?? null,
+      vehicleIdentity: result?.vehicleIdentityDiagnostics || null,
       extractionSource: result?.extractionSource || null,
       checkedAt: result?.checkedAt || entry.processedAt || null
     },
@@ -959,7 +1046,7 @@ function scheduleUpload(delay = CONFIG.uploadDelayMs) {
   }, delay);
 }
 
-async function flushPendingUploads(force = false) {
+async function flushPendingUploads(force = false, allowRecreate = true) {
   if (uploadInFlight || !remoteRun?.scanId) return false;
   if (!pendingUploadsByListingId.size) {
     remoteSyncState = remoteCompleted ? "synced" : "idle";
@@ -1000,7 +1087,7 @@ async function flushPendingUploads(force = false) {
     updateProgress();
     return pendingUploadsByListingId.size === 0;
   } catch (error) {
-    if (!force && isMissingRemoteScanError(error)) {
+    if (!force && allowRecreate && isMissingRemoteScanError(error)) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1018,14 +1105,14 @@ async function flushPendingUploads(force = false) {
       throw error;
     }
 
-    scheduleUpload(CONFIG.uploadRetryMs);
+    if (!scanFinalised) scheduleUpload(CONFIG.uploadRetryMs);
     return false;
   } finally {
     uploadInFlight = false;
 
     if (scanFinalised && !remoteCompleted && remoteSyncState !== "error") {
       setTimeout(() => {
-        finaliseRemoteIfReady().catch(error => {
+        finaliseRemoteIfReady({ allowRecreate }).catch(error => {
           console.warn("Marketplace Vehicle Scanner completion retry failed:", error);
         });
       }, 0);
@@ -1084,7 +1171,7 @@ async function syncRemoteProgress() {
 async function processListing(entry, generation) {
   const { listing, metadata, priority } = entry;
 
-  if (!scanningActive || generation !== scanGeneration) return;
+  if (!scanIsRunning() || generation !== scanGeneration) return;
 
   upsertLedgerEntry(listing.id, {
     status: "scanning",
@@ -1097,12 +1184,12 @@ async function processListing(entry, generation) {
   try {
     const result = await inspectListing(listing.url, priority);
 
-    if (!scanningActive || generation !== scanGeneration) return;
+    if (!scanIsRunning() || generation !== scanGeneration) return;
 
     await saveCachedResult(listing.id, result);
     classifyListing(listing.id, metadata, result, "facebook-listing-page");
   } catch (error) {
-    if (!scanningActive || generation !== scanGeneration) return;
+    if (!scanIsRunning() || generation !== scanGeneration) return;
 
     markFinal(listing.id, "unavailable", {
       reason: error instanceof Error ? error.message : String(error),
@@ -1115,7 +1202,7 @@ async function processListing(entry, generation) {
 }
 
 async function scanPage() {
-  if (!settings.enabled || !scanningActive || finalising || scanFinalised) return;
+  if (!settings.enabled || !scanIsRunning() || finalising || scanFinalised) return;
   if (!isMarketplaceSearchRoute()) return;
 
   if (sourceSearchRouteKey && getRouteKey() !== sourceSearchRouteKey) {
@@ -1134,7 +1221,7 @@ async function scanPage() {
   const cachedResults = await loadCachedResults(cacheIds);
 
   for (const entry of entries) {
-    if (!scanningActive || scanFinalised || finalising) break;
+    if (!scanIsRunning() || scanFinalised || finalising) break;
     if (evaluateAndFinaliseIfNeeded()) break;
 
     const counts = countStates();
@@ -1164,12 +1251,16 @@ async function scanPage() {
       continue;
     }
 
-    const localResult = combineCategoryResult(metadata, null);
+    const localResult = enrichVehicleIdentity(
+      metadata,
+      combineCategoryResult(metadata, null),
+      false
+    );
     const localEvaluation = evaluateFilters(metadata, localResult);
 
     if (
       localEvaluation.rejected &&
-      ["year", "price", "mileage", "mileage-unknown", "keyword"]
+      ["year", "price", "mileage", "mileage-unknown", "keyword", "make_not_allowed", "model_not_allowed"]
         .includes(localEvaluation.code)
     ) {
       markFinal(listing.id, "rejected", {
@@ -1200,6 +1291,7 @@ async function scanPage() {
 }
 
 function scheduleScan(delay = CONFIG.scanDebounceMs) {
+  if (!scanIsRunning()) return;
   clearTimeout(scanTimer);
   scanTimer = setTimeout(() => {
     scanPage().catch(error => {
@@ -1215,7 +1307,7 @@ function getActiveWorkCount() {
 async function waitForActiveWorkToSettle(timeoutMs = CONFIG.activeWorkTimeoutMs) {
   const startedAt = Date.now();
 
-  while (scanningActive && !scanFinalised && !finalising) {
+  while (scanIsRunning() && !scanFinalised && !finalising) {
     await scanPage();
 
     if (getActiveWorkCount() === 0) {
@@ -1226,7 +1318,7 @@ async function waitForActiveWorkToSettle(timeoutMs = CONFIG.activeWorkTimeoutMs)
       return false;
     }
 
-    await new Promise(resolve => setTimeout(resolve, CONFIG.activeWorkPollMs));
+    await waitForScanDelay(CONFIG.activeWorkPollMs);
   }
 
   return false;
@@ -1329,12 +1421,12 @@ function waitForListingGrowth(previousCount, timeoutMs = CONFIG.growthTimeoutMs)
         return;
       }
 
-      if (!scanningActive || Date.now() - startedAt >= timeoutMs) {
+      if (!scanIsRunning() || Date.now() - startedAt >= timeoutMs) {
         resolve({ grew: false, count: currentCount });
         return;
       }
 
-      setTimeout(check, 180);
+      waitForScanDelay(180).then(check);
     };
 
     check();
@@ -1342,23 +1434,24 @@ function waitForListingGrowth(previousCount, timeoutMs = CONFIG.growthTimeoutMs)
 }
 
 async function autoLoadListings() {
-  if (!settings.autoLoadEnabled || autoLoadingActive || !scanningActive) return;
+  if (!settings.autoLoadEnabled || autoLoadingActive || !scanIsRunning()) return;
 
   autoLoadingActive = true;
   autoLoadStopRequested = false;
+  recordLifecycleDiagnostic("auto_scroll_started");
   let stalls = 0;
   let endConfirmations = 0;
   let previousDiscoveredCount = ledgerByListingId.size;
   updateProgress();
 
   while (
-    scanningActive &&
+    scanIsRunning() &&
     !scanFinalised &&
     !finalising &&
     !autoLoadStopRequested
   ) {
     if (isListingRoute()) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await waitForScanDelay(500);
       continue;
     }
 
@@ -1368,7 +1461,7 @@ async function autoLoadListings() {
     await scanPage();
     await waitForActiveWorkToSettle();
 
-    if (!scanningActive || evaluateAndFinaliseIfNeeded()) break;
+    if (!scanIsRunning() || evaluateAndFinaliseIfNeeded()) break;
 
     // If there are still unprocessed cards in the current DOM, scan another
     // controlled batch before moving the page.
@@ -1392,7 +1485,7 @@ async function autoLoadListings() {
         container,
         Math.max(0, before.top - Math.round(before.client * 0.18))
       );
-      await new Promise(resolve => setTimeout(resolve, 220));
+      await waitForScanDelay(220);
       nextTop = getScrollMetrics(container).max;
     }
 
@@ -1428,6 +1521,7 @@ async function autoLoadListings() {
   }
 
   autoLoadingActive = false;
+  recordLifecycleDiagnostic("auto_scroll_stopped");
   updateProgress();
 }
 
@@ -1445,6 +1539,47 @@ function cancelOutstandingLedgerWork() {
   queuedListingIds = new Set();
 }
 
+function connectDiscoveryObserver() {
+  if (observerConnected || !scanIsRunning()) return;
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observerConnected = true;
+  recordLifecycleDiagnostic("observer_connected");
+}
+
+function disconnectDiscoveryObserver() {
+  if (!observerConnected) return;
+  observer.disconnect();
+  observerConnected = false;
+  recordLifecycleDiagnostic("observer_disconnected");
+}
+
+function stopScanningActivity(reason) {
+  const autoScrollWasActive = autoLoadingActive;
+  scanningActive = false;
+  autoLoadingActive = false;
+  autoLoadStopRequested = true;
+  scanGeneration += 1;
+  clearTimeout(scanTimer);
+  clearTimeout(observerTimer);
+  clearTimeout(scrollTimer);
+  clearTimeout(progressTimer);
+  scanTimer = null;
+  observerTimer = null;
+  scrollTimer = null;
+  progressTimer = null;
+  clearDeadlineTimer();
+  clearElapsedTimer();
+  cancelScanDelays();
+  disconnectDiscoveryObserver();
+  cancelOutstandingLedgerWork();
+  cardByListingId = new Map();
+  if (runToken) {
+    sendBackground({ type: "CANCEL_SCAN_INSPECTIONS", runToken }).catch(() => {});
+  }
+  if (autoScrollWasActive) recordLifecycleDiagnostic("auto_scroll_stopped", { reason });
+  recordLifecycleDiagnostic("scanning_activity_stopped", { reason });
+}
+
 function clearDeadlineTimer() {
   clearTimeout(deadlineTimer);
   deadlineTimer = null;
@@ -1458,7 +1593,7 @@ function clearElapsedTimer() {
 function armElapsedTimer() {
   clearElapsedTimer();
   elapsedTimer = setInterval(() => {
-    if (scanningActive) {
+    if (scanIsRunning()) {
       updateProgress();
     }
   }, 1000);
@@ -1470,7 +1605,7 @@ function armDeadlineTimer() {
   if (!scanDeadlineAt) return;
 
   deadlineTimer = setTimeout(() => {
-    if (scanningActive && !scanFinalised) {
+    if (scanIsRunning() && !scanFinalised) {
       finaliseScan("timed_out", "duration_limit_reached").catch(error => {
         console.error("Marketplace Vehicle Scanner timeout finalisation failed:", error);
       });
@@ -1478,7 +1613,7 @@ function armDeadlineTimer() {
   }, Math.max(0, scanDeadlineAt - Date.now()));
 }
 
-async function finaliseRemoteIfReady() {
+async function finaliseRemoteIfReady(options = {}) {
   if (
     !remoteRun?.scanId ||
     remoteCompleted ||
@@ -1488,13 +1623,12 @@ async function finaliseRemoteIfReady() {
     return false;
   }
 
-  const uploaded = await flushPendingUploads(true);
+  const uploaded = await flushPendingUploads(true, options.allowRecreate !== false);
 
   if (!uploaded || pendingUploadsByListingId.size) {
     remoteSyncState = "error";
     remoteSyncError = remoteSyncError || "Completed results are waiting to upload.";
     updateProgress();
-    scheduleUpload(CONFIG.uploadRetryMs);
     return false;
   }
 
@@ -1518,6 +1652,10 @@ async function finaliseRemoteIfReady() {
     remoteSyncState = "synced";
     remoteSyncError = null;
     schedulePersist(0);
+    clearTimeout(uploadTimer);
+    clearTimeout(progressTimer);
+    uploadTimer = null;
+    progressTimer = null;
     updateProgress();
 
     if (
@@ -1532,7 +1670,7 @@ async function finaliseRemoteIfReady() {
 
     return true;
   } catch (error) {
-    if (isMissingRemoteScanError(error)) {
+    if (options.allowRecreate !== false && isMissingRemoteScanError(error)) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1545,7 +1683,6 @@ async function finaliseRemoteIfReady() {
     remoteSyncState = "error";
     remoteSyncError = error instanceof Error ? error.message : String(error);
     updateProgress();
-    scheduleUpload(CONFIG.uploadRetryMs);
     return false;
   } finally {
     completionInFlight = false;
@@ -1558,19 +1695,24 @@ async function finaliseScan(status, reason) {
   }
 
   finalising = true;
-  scanningActive = false;
-  autoLoadingActive = false;
-  autoLoadStopRequested = true;
-  scanGeneration += 1;
-  clearDeadlineTimer();
-  clearElapsedTimer();
-  cancelOutstandingLedgerWork();
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "STOP");
+  recordLifecycleDiagnostic("completion_started", { status, reason });
+  stopScanningActivity(reason);
 
   scanStatus = status;
   stopReason = reason;
   scanCompletedAt = Date.now();
   scanFinalised = true;
+  lifecycleState = status === "failed"
+    ? ScannerLifecycle.transition(lifecycleState, "FAIL")
+    : status === "stopped"
+      ? ScannerLifecycle.transition(lifecycleState, "STOPPED")
+      : ScannerLifecycle.transition(lifecycleState, "COMPLETE");
+  historicalScanStatus = status;
   finalising = false;
+  clearTimeout(uploadTimer);
+  uploadTimer = null;
+  recordLifecycleDiagnostic("completion_terminal", { status, reason });
 
   updateProgress();
   schedulePersist(0);
@@ -1633,11 +1775,13 @@ async function recreateMissingRemoteScan() {
   return replacementRun;
 }
 
-async function retryRemoteSync() {
+async function retryRemoteSync(options = {}) {
   if (!remoteRun?.scanId) {
     throw new Error("There is no hosted scan to synchronise.");
   }
 
+  const previousLifecycleState = lifecycleState;
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "SYNC");
   remoteSyncError = null;
   remoteSyncState = "syncing";
 
@@ -1649,22 +1793,24 @@ async function retryRemoteSync() {
   schedulePersist(0);
 
   try {
-    await flushPendingUploads(true);
-  } catch (error) {
-    if (!isMissingRemoteScanError(error)) {
-      throw error;
+    try {
+      await flushPendingUploads(true, options.allowRecreate !== false);
+    } catch (error) {
+      if (!isMissingRemoteScanError(error) || options.allowRecreate === false) throw error;
+      await recreateMissingRemoteScan();
+      await flushPendingUploads(true);
     }
 
-    await recreateMissingRemoteScan();
-    await flushPendingUploads(true);
+    if (scanFinalised) {
+      await finaliseRemoteIfReady({ allowRecreate: options.allowRecreate !== false });
+    } else {
+      await syncRemoteProgress();
+    }
+    recordLifecycleDiagnostic("remote_sync_finished", { explicit: options.explicit === true });
+  } finally {
+    if (lifecycleState === "syncing") lifecycleState = previousLifecycleState;
+    updateProgress();
   }
-
-  if (scanFinalised) {
-    await finaliseRemoteIfReady();
-  } else {
-    await syncRemoteProgress();
-  }
-
   return getRuntimeProgress();
 }
 
@@ -1697,17 +1843,19 @@ function buildScanCreatePayload() {
       maxMileage: settings.maxMileage,
       unknownMileagePolicy: settings.unknownMileagePolicy,
       excludedCategories: settings.excludeCategories,
-      excludedKeywords: settings.excludedKeywords
+      excludedKeywords: settings.excludedKeywords,
+      acceptedMakes: settings.acceptedMakes,
+      acceptedModels: settings.acceptedModels
     },
     extensionVersion: EXTENSION_VERSION
   };
 }
 
 function resetRunMemory() {
+  stopScanningActivity("reset");
   clearTimeout(scanTimer);
   clearTimeout(uploadTimer);
   clearTimeout(progressTimer);
-  clearTimeout(progressStorageTimer);
   clearDeadlineTimer();
   clearElapsedTimer();
 
@@ -1721,7 +1869,10 @@ function resetRunMemory() {
   scanCompletedAt = null;
   scanDeadlineAt = null;
   scanStatus = "idle";
+  lifecycleState = "idle";
+  historicalScanStatus = null;
   stopReason = null;
+  runToken = null;
   remoteRun = null;
   remoteCompleted = false;
   remoteSyncState = "idle";
@@ -1738,9 +1889,39 @@ function resetRunMemory() {
   completionInFlight = false;
 }
 
+function activateRunningScan(resumed = false) {
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, resumed ? "RESUME" : "START");
+  scanStatus = "running";
+  historicalScanStatus = null;
+  scanningActive = true;
+  scanFinalised = false;
+  autoLoadStopRequested = false;
+  scanGeneration += 1;
+  connectDiscoveryObserver();
+  armDeadlineTimer();
+  armElapsedTimer();
+  ensurePanel();
+  collectCards();
+  updateProgress();
+  schedulePersist(0);
+  scheduleScan(0);
+  recordLifecycleDiagnostic(resumed ? "explicit_resume" : "explicit_start");
+
+  if (settings.autoLoadEnabled) {
+    autoLoadListings().catch(error => {
+      console.error("Marketplace Vehicle Scanner auto-load failed:", error);
+      finaliseScan("failed", "error").catch(() => {});
+    });
+  }
+}
+
 async function startNewScan() {
   if (!isMarketplaceSearchRoute()) {
     throw new Error("Open a Facebook Marketplace search results page first.");
+  }
+
+  if (lifecycleState === "interrupted") {
+    throw new Error("Resume or discard the interrupted scan before starting a new scan.");
   }
 
   if (remoteRun?.scanId && !remoteCompleted) {
@@ -1766,6 +1947,8 @@ async function startNewScan() {
   scanStartedAt = Date.now();
   scanDeadlineAt = scanStartedAt + settings.maximumDurationSeconds * 1000;
   scanStatus = "creating";
+  lifecycleState = "idle";
+  runToken = crypto.randomUUID();
   remoteSyncState = "syncing";
   updateProgress();
 
@@ -1780,25 +1963,37 @@ async function startNewScan() {
     throw error;
   }
 
-  scanStatus = "running";
   remoteSyncState = "synced";
-  scanningActive = true;
-  autoLoadStopRequested = false;
-  armDeadlineTimer();
-  armElapsedTimer();
-  ensurePanel();
-  collectCards();
-  updateProgress();
-  schedulePersist(0);
-  scheduleScan(0);
+  activateRunningScan(false);
 
-  if (settings.autoLoadEnabled) {
-    autoLoadListings().catch(error => {
-      console.error("Marketplace Vehicle Scanner auto-load failed:", error);
-      finaliseScan("failed", "error").catch(() => {});
-    });
+  return getRuntimeProgress();
+}
+
+async function resumeInterruptedScan() {
+  if (lifecycleState !== "interrupted" || !remoteRun?.scanId) {
+    throw new Error("There is no interrupted scan to resume.");
   }
+  if (!isMarketplaceSearchRoute() || sourceSearchRouteKey !== getRouteKey()) {
+    throw new Error("Open the original Marketplace search page before resuming.");
+  }
+  runToken = runToken || crypto.randomUUID();
+  if (!scanDeadlineAt || scanDeadlineAt <= Date.now()) {
+    scanDeadlineAt = Date.now() + settings.maximumDurationSeconds * 1000;
+  }
+  activateRunningScan(true);
+  return getRuntimeProgress();
+}
 
+async function discardInterruptedScan() {
+  if (lifecycleState !== "interrupted") {
+    throw new Error("There is no interrupted scan to discard.");
+  }
+  stopScanningActivity("explicit_discard");
+  await chrome.storage.local.remove([CONFIG.activeRunStorageKey, "runtimeProgress"]);
+  resetRunMemory();
+  recordLifecycleDiagnostic("explicit_discard");
+  removePanel();
+  updateProgress();
   return getRuntimeProgress();
 }
 
@@ -1841,7 +2036,10 @@ async function persistActiveRun() {
       scanCompletedAt,
       scanDeadlineAt,
       scanStatus,
+      lifecycleState,
+      historicalScanStatus,
       stopReason,
+      runToken,
       scanningActive,
       scanFinalised,
       remoteRun,
@@ -1852,6 +2050,7 @@ async function persistActiveRun() {
       ledger: serialiseMap(ledgerByListingId),
       results: serialiseMap(resultByListingId),
       pendingUploads: serialiseMap(pendingUploadsByListingId),
+      lifecycleDiagnostics,
       filterFingerprint: getFilterFingerprint(),
       savedAt: Date.now()
     }
@@ -1863,17 +2062,31 @@ async function restoreActiveRun() {
   const state = stored[CONFIG.activeRunStorageKey];
 
   if (!state || state.version !== 19 || !state.remoteRun?.scanId) {
+    lifecycleState = "idle";
+    scanningActive = false;
+    recordLifecycleDiagnostic("startup_idle", { persisted: false });
     return false;
   }
 
-  settings = { ...DEFAULT_SETTINGS, ...(state.settingsSnapshot || {}) };
+  const startup = ScannerLifecycle.classifyPersistedRun(state);
+  settings = {
+    ...DEFAULT_SETTINGS,
+    ...(state.settingsSnapshot || {}),
+    acceptedMakes: VehicleIdentity.normaliseMakeFilters(state.settingsSnapshot?.acceptedMakes),
+    acceptedModels: VehicleIdentity.normaliseFilterValues(state.settingsSnapshot?.acceptedModels)
+  };
   sourceSearchRouteKey = state.sourceSearchRouteKey || null;
   scanStartedAt = state.scanStartedAt || null;
   scanCompletedAt = state.scanCompletedAt || null;
   scanDeadlineAt = state.scanDeadlineAt || null;
   scanStatus = state.scanStatus || "stopped";
+  lifecycleState = startup.lifecycleState;
+  historicalScanStatus = startup.historicalStatus;
   stopReason = state.stopReason || null;
-  scanningActive = Boolean(state.scanningActive && !state.scanFinalised);
+  runToken = state.runToken || null;
+  scanningActive = false;
+  autoLoadingActive = false;
+  autoLoadStopRequested = true;
   scanFinalised = Boolean(state.scanFinalised);
   remoteRun = state.remoteRun;
   remoteCompleted = Boolean(state.remoteCompleted);
@@ -1883,6 +2096,9 @@ async function restoreActiveRun() {
   ledgerByListingId = new Map(Object.entries(state.ledger || {}));
   resultByListingId = new Map(Object.entries(state.results || {}));
   pendingUploadsByListingId = new Map(Object.entries(state.pendingUploads || {}));
+  lifecycleDiagnostics = Array.isArray(state.lifecycleDiagnostics)
+    ? state.lifecycleDiagnostics.slice(-30)
+    : [];
   queuedListingIds = new Set();
   cardByListingId = new Map();
 
@@ -1896,36 +2112,33 @@ async function restoreActiveRun() {
     }
   }
 
+  if (lifecycleState === "interrupted") {
+    historicalScanStatus = state.scanStatus || "running";
+    scanStatus = "interrupted";
+  }
+
   ensurePanel();
+  recordLifecycleDiagnostic("startup_restored", {
+    persistedStatus: state.scanStatus || "unknown",
+    startupState: lifecycleState
+  });
   updateProgress();
 
-  if (scanFinalised && !remoteCompleted) {
-    retryRemoteSync().catch(() => {});
-  } else if (
-    scanningActive &&
-    sourceSearchRouteKey === getRouteKey() &&
-    isMarketplaceSearchRoute()
-  ) {
-    scanGeneration += 1;
-    autoLoadStopRequested = false;
-    armDeadlineTimer();
-    armElapsedTimer();
-    collectCards();
-    scheduleScan(0);
-
-    if (settings.autoLoadEnabled) {
-      autoLoadListings().catch(error => {
-        console.error("Marketplace Vehicle Scanner restored auto-load failed:", error);
-      });
-    }
-  } else if (scanningActive) {
-    scanningActive = false;
-    scanStatus = "stopped";
-    stopReason = "extension_closed";
-    scanCompletedAt = Date.now();
-    scanFinalised = true;
-    schedulePersist(0);
-    retryRemoteSync().catch(() => {});
+  if (startup.allowSyncRecovery) {
+    retryRemoteSync({ allowRecreate: false }).then(() => {
+      lifecycleState = "idle";
+      historicalScanStatus = scanStatus;
+      recordLifecycleDiagnostic("startup_sync_recovered");
+      updateProgress();
+      schedulePersist(0);
+    }).catch(error => {
+      lifecycleState = "idle";
+      remoteSyncState = "error";
+      remoteSyncError = error instanceof Error ? error.message : String(error);
+      recordLifecycleDiagnostic("startup_sync_failed");
+      updateProgress();
+      schedulePersist(0);
+    });
   }
 
   return true;
@@ -1991,7 +2204,9 @@ async function loadSettings() {
       : ["S", "N", "C", "D"],
     excludedKeywords: Array.isArray(stored.excludedKeywords)
       ? stored.excludedKeywords
-      : []
+      : [],
+    acceptedMakes: VehicleIdentity.normaliseMakeFilters(stored.acceptedMakes),
+    acceptedModels: VehicleIdentity.normaliseFilterValues(stored.acceptedModels)
   };
 }
 
@@ -2188,6 +2403,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return respond(stopScanByUser());
   }
 
+  if (message?.type === "RESUME_SCAN") {
+    return respond(resumeInterruptedScan());
+  }
+
+  if (message?.type === "DISCARD_INTERRUPTED_SCAN") {
+    return respond(discardInterruptedScan());
+  }
+
   if (message?.type === "GET_SCAN_STATE") {
     sendResponse({ ok: true, result: getRuntimeProgress() });
     return false;
@@ -2198,7 +2421,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "RETRY_REMOTE_SYNC") {
-    return respond(retryRemoteSync());
+    return respond(retryRemoteSync({ explicit: true }));
   }
 
   if (message?.type === "CLEAR_LOCAL_SCANNER_STATE") {
@@ -2209,7 +2432,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 const observer = new MutationObserver(mutations => {
-  if (!scanningActive || isListingRoute()) return;
+  if (!scanIsRunning() || isListingRoute()) return;
 
   if (mutations.every(isExtensionMutation)) return;
 
@@ -2225,13 +2448,8 @@ async function initialiseScanner() {
     .catch(() => false);
   if (controlledDetailTab) return;
 
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
-
   window.addEventListener("scroll", () => {
-    if (!scanningActive || isListingRoute()) return;
+    if (!scanIsRunning() || isListingRoute()) return;
 
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => scheduleScan(0), CONFIG.scanDebounceMs);
@@ -2240,7 +2458,7 @@ async function initialiseScanner() {
   window.addEventListener("popstate", () => {
     currentRouteKey = getRouteKey();
 
-    if (scanningActive && sourceSearchRouteKey === currentRouteKey) {
+    if (scanIsRunning() && sourceSearchRouteKey === currentRouteKey) {
       scheduleScan(100);
     }
   });

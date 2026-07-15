@@ -10,6 +10,8 @@ node --check content.js
 node --check popup.js
 node --check category-detector.js
 node --check mileage-utils.js
+node --check scanner-lifecycle.js
+node --check vehicle-identity.js
 node --check listing-details-extractor.js
 node --check payload-normalizer.js
 node --test
@@ -18,7 +20,7 @@ node scripts/validate-manifest.js
 
 `npm run validate` runs the same suite. CI runs it on pushes and pull requests without secrets.
 
-Detector tests cover forward/reverse terms, controlled misspellings, punctuation and Unicode normalization, explicit local negation, later positive assertions, non-insurance categories, source priority, and conflicting evidence. Payload tests cover restored decimal normalization, backward-compatible payloads, source mileage units, description line breaks, gallery caps/deduplication, malformed URL omission, attribute normalization, seller bounds, and required URL/status/category/metadata validation. The sanitized rendered fixture covers multiline description, kilometre mileage, automatic/gasoline/colour facts, media quality/order, and exclusion of avatars, recommendations, adverts, and non-Facebook image hosts.
+Lifecycle tests cover idle startup, terminal reload, explicit interrupted recovery, sync-only recovery, Start/Resume gating, cleanup wiring, and run-scoped controlled-tab cancellation. Identity tests cover empty filters, aliases, token-aware models, unrelated wording, both-filter semantics, source priority, diagnostics, and old settings/payload compatibility. Existing detector, payload, and rendered-listing regressions remain unchanged.
 
 ## Small end-to-end manual test
 
@@ -47,5 +49,7 @@ Expected flow:
 13. With a deliberately removed test scan, retry recreates the remote scan and replays the durable ledger.
 14. Contacting the seller still happens only on the original Facebook listing.
 15. During an incomplete static-detail fetch, confirm any inactive item tab closes after extraction and does not stop or reset the scan.
+16. Reload with an active scan and verify **Interrupted scan found** appears without discovery; test Resume and Discard separately.
+17. After completion, wait 30 seconds, refresh, and reopen Marketplace; verify no scrolling, processing, controlled tabs, or remote scan creation.
 
 Do not delete a production scan merely to test recovery. Use a disposable local or dedicated test scan.

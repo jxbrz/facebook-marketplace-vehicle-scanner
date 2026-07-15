@@ -121,6 +121,27 @@ test("normalises attributes to a bounded deterministic plain JSON-safe map", () 
   assert.equal(Object.getPrototypeOf(result.vehicleAttributes), null);
 });
 
+test("carries detected advert make and model through existing optional attributes", () => {
+  const result = normaliseRemoteListing(listing({
+    vehicleAttributes: {
+      "Advert make": "Volkswagen",
+      "Advert model": "Polo",
+      "Advert make/model source": "listing_title"
+    },
+    rawMetadata: {
+      vehicleIdentity: {
+        detectedMake: "Volkswagen",
+        detectedModel: "Polo",
+        matchingRule: "explicit_alias_and_token_match_v1"
+      }
+    }
+  }));
+  assert.equal(result.vehicleAttributes["Advert make"], "Volkswagen");
+  assert.equal(result.vehicleAttributes["Advert model"], "Polo");
+  assert.equal(result.rawMetadata.vehicleIdentity.detectedModel, "Polo");
+  assert.equal(normaliseRemoteListing(listing()).vehicleAttributes["Advert make"], undefined);
+});
+
 test("bounds seller names and accepts only Facebook profile URLs", () => {
   const result = normaliseRemoteListing(listing({
     sellerName: "x".repeat(LIMITS.sellerNameCharacters + 50),

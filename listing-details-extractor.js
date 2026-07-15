@@ -49,6 +49,7 @@
   ]);
   const URL_KEYS = new Set(["url", "canonical_url", "canonicalUrl", "listing_url", "listingUrl"]);
   const DESCRIPTION_KEYS = new Set(["redacted_description", "redactedDescription", "description", "seller_description", "sellerDescription"]);
+  const TITLE_KEYS = new Set(["marketplace_listing_title", "marketplaceListingTitle", "listing_title", "listingTitle", "title"]);
   const PHOTO_KEYS = new Set(["listing_photos", "listingPhotos", "photo_urls", "photoUrls", "photos", "listing_media", "listingMedia"]);
   const ATTRIBUTE_KEYS = new Set(["attribute_data", "attributeData", "vehicle_attributes", "vehicleAttributes", "vehicle_specs", "vehicleSpecs"]);
   const SELLER_KEYS = new Set(["marketplace_listing_seller", "marketplaceListingSeller", "marketplaceSeller", "seller"]);
@@ -322,13 +323,17 @@
     let mileageDetail = null;
     let transmission = null;
     let fuelType = null;
+    let detectedMake = null;
+    let detectedModel = null;
     for (const [label, value] of Object.entries(attributes || {})) {
       const key = label.toLowerCase();
       if (!mileageDetail && /mileage|distance|kilomet|miles/.test(key)) mileageDetail = parseMileageDetail(value);
       if (!transmission && /transmission|gearbox/.test(key)) transmission = normaliseText(value, 80);
       if (!fuelType && /fuel|gasoline|petrol|diesel/.test(key)) fuelType = normaliseText(value, 80);
+      if (!detectedMake && /^(?:make|manufacturer|marque)$/.test(key)) detectedMake = normaliseText(value, 80);
+      if (!detectedModel && /^(?:model|vehicle model)$/.test(key)) detectedModel = normaliseText(value, 80);
     }
-    return { mileageDetail, transmission, fuelType };
+    return { mileageDetail, transmission, fuelType, detectedMake, detectedModel };
   }
 
   function firstNamedText(candidates, keys, maximumLength) {
@@ -383,6 +388,7 @@
     }
 
     return {
+      listingTitle: firstNamedText(candidates, TITLE_KEYS, 500),
       fullDescription: firstNamedText(candidates, DESCRIPTION_KEYS, LIMITS.fullDescriptionCharacters),
       ...images,
       vehicleAttributes,
@@ -476,13 +482,17 @@
     });
 
     const images = rankImageCandidates(snapshot?.imageCandidates || []);
+    const recognised = recognisedFields(vehicleAttributes);
     return {
+      listingTitle: normaliseText(snapshot?.listingTitle, 500),
       fullDescription: descriptionLines.length ? descriptionLines.join("\n") : null,
       ...images,
       vehicleAttributes,
       mileageDetail,
       transmission,
       fuelType,
+      detectedMake: recognised.detectedMake,
+      detectedModel: recognised.detectedModel,
       sellerName: null,
       sellerProfileUrl: null,
       listedAtText: normaliseText(snapshot?.listedAtText, LIMITS.listedAtTextCharacters),
@@ -499,12 +509,15 @@
     const imageUrls = [...new Set(preferEmbeddedImages ? [...embeddedImages, ...renderedImages] : [...renderedImages, ...embeddedImages])].slice(0, LIMITS.imageCount);
     return {
       fullDescription: embedded?.fullDescription || rendered.fullDescription || null,
+      listingTitle: embedded?.listingTitle || rendered.listingTitle || null,
       primaryImageUrl: preferEmbeddedImages ? embedded?.primaryImageUrl : rendered.primaryImageUrl || embedded?.primaryImageUrl || null,
       imageUrls,
       vehicleAttributes: { ...(rendered.vehicleAttributes || {}), ...(embedded?.vehicleAttributes || {}) },
       mileageDetail: embedded?.mileageDetail || rendered.mileageDetail || null,
       transmission: embedded?.transmission || rendered.transmission || null,
       fuelType: embedded?.fuelType || rendered.fuelType || null,
+      detectedMake: embedded?.detectedMake || rendered.detectedMake || null,
+      detectedModel: embedded?.detectedModel || rendered.detectedModel || null,
       sellerName: embedded?.sellerName || rendered.sellerName || null,
       sellerProfileUrl: embedded?.sellerProfileUrl || rendered.sellerProfileUrl || null,
       listedAtText: embedded?.listedAtText || rendered.listedAtText || null,
@@ -597,9 +610,13 @@
     const descriptionHeading = findHeading(["Seller's description", "Seller’s description"]);
     const aboutHeading = findHeading(["About this vehicle"]);
     const mainLines = splitVisibleLines(elementText(document.querySelector('[role="main"]') || document.body));
+    const listingTitle = [...document.querySelectorAll('[role="main"] h1,[role="main"] [role="heading"][aria-level="1"]')]
+      .map(elementText)
+      .find(text => text && !/marketplace/i.test(text)) || null;
     const listedAtText = mainLines.find(line => /^listed\b/i.test(line) && line.length <= LIMITS.listedAtTextCharacters) || null;
     return {
       listingId,
+      listingTitle,
       descriptionLines: sectionLinesFromHeading(descriptionHeading, /seller['’]s description/i, LIMITS.fullDescriptionCharacters),
       aboutLines: sectionLinesFromHeading(aboutHeading, /about this vehicle/i, LIMITS.attributeValueCharacters),
       listedAtText,

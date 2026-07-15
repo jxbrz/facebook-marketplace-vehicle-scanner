@@ -10,9 +10,9 @@
 8. Reload the unpacked extension without uninstalling it.
 9. Run the small end-to-end test in `TESTING.md`.
 10. Verify progress, results, ordering, and actions in the Vercel dashboard.
-11. Tag the Git release, for example `git tag -a v23.0.1 -m "v23.0.1"`.
+11. Tag the Git release, for example `git tag -a v23.0.2 -m "v23.0.2"`.
 12. Create a clean ZIP if needed with `scripts/package.ps1`, then inspect its file list before publishing.
 
 Never rotate the manifest key as part of release packaging. Never include `.env` files, Chrome profiles, screenshots, tokens, or repository metadata in an archive.
 
-For v23.0.1, deploy the additive dashboard mileage migration and API before distributing or reloading the extension. Reload the unpacked extension in place without uninstalling it, then reload the active Marketplace tab. No storage clearing or active-run schema migration is required.
+Version 23.0.2 requires no dashboard migration. Reload the unpacked extension in place without uninstalling it, then reload Marketplace. Persisted v19 active-run state remains compatible and may appear as interrupted pending explicit action.

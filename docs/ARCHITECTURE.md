@@ -13,6 +13,8 @@ The hosted Next.js application authenticates extension requests, validates struc
 - `background.js`: bounded Facebook fetch queue, serialized inactive-tab rendered fallback with timeout/cleanup, and authenticated dashboard request boundary.
 - `listing-details-extractor.js`: bounded listing-ID/canonical-URL embedded traversal, semantic rendered-section extraction, and reusable media ranking. `og:image` is the final image fallback.
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
+- `scanner-lifecycle.js`: pure persisted-state classification and explicit transition rules.
+- `vehicle-identity.js`: pure make/model normalization, controlled aliases, title-context rules, and diagnostics.
 - `payload-normalizer.js`: pure final upload normalization and validation.
 - `popup.*`: local configuration and lifecycle controls.
 - `styles.css`: the scanner status panel only; no native Facebook result hiding, dimming, badges, or card decoration.
@@ -43,3 +45,5 @@ Static service-worker fetches can contain only Facebook's initial HTML and omit 
 The scan checks target matches before processed count, then duration. Finalization immediately disables scanning and auto-loading, increments the generation so late requests cannot classify new results, clears timers, and returns queued/scanning ledger entries to discovered state. Already completed outcomes remain final and uploadable.
 
 Remote completion occurs only after the pending upload map is empty. Auto-open occurs only after the completion request succeeds.
+
+Discovery execution is idle-first. The MutationObserver is disconnected by default and connects only for explicit `running`. Completion clears discovery/debounce/deadline/elapsed/scroll timers, resolves scan waits, disconnects the observer, increments the generation, cancels queued inspections by run token, and closes matching controlled tabs. Upload/persistence work is separate and cannot activate discovery.

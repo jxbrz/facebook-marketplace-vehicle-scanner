@@ -18,6 +18,8 @@ The server compares the Bearer token timing-safely, accepts only the exact confi
 
 Creates a running scan. Required limits are positive bounded integers. The response includes `scanId`, `status`, and `resultsUrl`.
 
+The existing JSON `filters` object may include optional normalized `acceptedMakes` and `acceptedModels` arrays. Empty/missing arrays preserve existing behavior. No new endpoint or database column is required.
+
 ### `POST /api/extension/scans/:scanId/listings`
 
 Upserts completed outcomes on `(scan_run_id, external_listing_id)`. The server accepts 1-50 listings; the extension normally sends batches of 10 and never more than 25 at its request boundary. Replaying a batch is idempotent and updates existing rows. Duplicate identities in one request use last-result-wins semantics.
@@ -35,6 +37,8 @@ Listing fields:
 Listing status is exactly `matched`, `rejected`, or `unavailable`. The existing generic rejection code `category` remains unchanged for dashboard compatibility; `categoryType` carries S/N/C/D.
 
 The v23 fields are optional, so old v19-v23.0.0 payloads and restored runs remain valid. The extension omits malformed optional image/profile URLs and non-serialisable or credential-shaped attributes before upload; the server independently validates and rejects malformed or excessive values. Description trimming preserves internal line breaks. The 256 KB request limit is unchanged.
+
+Version 23.0.2 records detected advert make/model through the existing bounded `vehicleAttributes` and `rawMetadata.vehicleIdentity` fields rather than adding top-level API fields. Older payloads remain unchanged.
 
 ### `PATCH /api/extension/scans/:scanId/progress`
 

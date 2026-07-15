@@ -2,7 +2,7 @@
 
 ## Durable state
 
-An active hosted run is stored in `chrome.storage.local` under `scannerV19:activeRun`. It includes the remote scan reference, settings snapshot, lifecycle timestamps, finalization state, ledger, fetched results, pending uploads, and filter fingerprint. The key and state schema version remain unchanged in v22.
+An active hosted run is stored in `chrome.storage.local` under `scannerV19:activeRun`. It includes the remote scan reference, settings snapshot, lifecycle timestamps, finalization state, ledger, fetched results, pending uploads, and filter fingerprint. The key and state schema version remain `scannerV19`/`19` in v23.0.2; lifecycle fields are additive.
 
 Final listing results are also cached as `listing:<id>` entries for 30 days. Configuration and the API token use their established top-level keys.
 
@@ -12,9 +12,11 @@ On content-script restoration:
 
 - final ledger entries stay final;
 - queued or scanning entries return to `discovered` because their requests cannot be trusted across reload;
-- a run resumes only on the original Marketplace route;
-- a run restored elsewhere becomes `stopped` with `extension_closed`;
-- a finalized but incomplete remote run retries synchronization automatically.
+- a previously running/creating/stopping run becomes `interrupted` and never resumes automatically;
+- Resume requires an explicit popup click on the original route;
+- Discard removes only the interrupted active-run/runtime-progress records and preserves settings and API token;
+- finalized pending/syncing work may upload automatically, but cannot discover, scroll, extract, or create replacement remote scans;
+- failed/error state waits for explicit Retry sync.
 
 ## Pending upload recovery
 
@@ -24,7 +26,7 @@ Price and mileage become nullable non-negative integers. Year becomes a nullable
 
 ## Missing hosted scan
 
-A `Scan run was not found` response during upload, progress, completion, or manual retry triggers:
+A `Scan run was not found` response during an explicit active flow or manual retry triggers:
 
 1. creation of a replacement hosted scan from the saved scan configuration;
 2. replacement of the local remote scan reference;
@@ -33,6 +35,8 @@ A `Scan run was not found` response during upload, progress, completion, or manu
 5. remote completion after the replay is empty.
 
 The replacement results URL is used for auto-open. Conflicting old and replacement IDs are not merged server-side.
+
+Passive startup synchronization never creates a replacement hosted scan. It records the error and waits for explicit Retry sync.
 
 ## Clearing state
 

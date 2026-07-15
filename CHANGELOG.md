@@ -1,5 +1,13 @@
 # Changelog
 
+## 23.0.2 - 2026-07-15
+
+- Changed startup to strict idle-first behavior: persisted running work becomes `interrupted` and requires explicit Resume or Discard instead of auto-resuming discovery or scrolling.
+- Limited discovery, observers, timers, auto-scroll, extraction queues, and controlled detail tabs to the explicit running state, with run-scoped cancellation and bounded lifecycle diagnostics.
+- Kept terminal scans terminal; startup sync recovery may upload durable final outcomes but cannot create replacement scans or restart Facebook activity.
+- Added optional accepted make/model filters with explicit aliases, token-aware conservative matching, deterministic rejection diagnostics, and settings snapshots.
+- Stored detected advert identity through the existing bounded vehicle attributes and raw metadata without changing the dashboard API contract.
+
 ## 23.0.1 - 2026-07-15
 
 - Added bounded listing-scoped ancestor traversal and semantic rendered-DOM fallback for descriptions and vehicle facts when Facebook's initial HTML is incomplete.

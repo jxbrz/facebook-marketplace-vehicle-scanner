@@ -3,6 +3,8 @@ const crypto = require("node:crypto");
 const assert = require("node:assert/strict");
 
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const contentSource = fs.readFileSync("content.js", "utf8");
 const expectedId = "aipljeeiecdcnkbbakphcddacbbgkpmf";
 const expectedPermissions = ["storage", "tabs"];
 const expectedHostPermissions = [
@@ -15,13 +17,17 @@ const expectedHostPermissions = [
 
 assert.equal(manifest.manifest_version, 3);
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-assert.equal(manifest.version, "23.0.1");
+assert.equal(manifest.version, "23.0.2");
+assert.equal(packageJson.version, manifest.version);
+assert.match(contentSource, /const EXTENSION_VERSION = "23\.0\.2";/);
 assert.ok(typeof manifest.key === "string" && manifest.key.length > 100);
 assert.deepEqual(manifest.permissions, expectedPermissions);
 assert.deepEqual(manifest.host_permissions, expectedHostPermissions);
 assert.deepEqual(manifest.content_scripts[0].js, [
   "category-detector.js",
   "mileage-utils.js",
+  "scanner-lifecycle.js",
+  "vehicle-identity.js",
   "content.js"
 ]);
 assert.equal(manifest.content_scripts[0].exclude_matches, undefined);

@@ -77,3 +77,19 @@ test("removes the controlled tab when rendered messaging fails", async () => {
   );
   assert.deepEqual(harness.removed, [77]);
 });
+
+test("run cancellation closes its controlled tab and prevents a rendered result", async () => {
+  let resolveExtraction;
+  const harness = createHarness(() => new Promise(resolve => { resolveExtraction = resolve; }));
+  const inspection = harness.context.inspectRenderedListing(
+    "https://www.facebook.com/marketplace/item/123/",
+    "123",
+    "run-1"
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  const cancelled = await harness.context.cancelScanInspections("run-1");
+  assert.equal(cancelled.closedTabs, 1);
+  resolveExtraction({ ok: true, result: { fullDescription: "Too late" } });
+  await assert.rejects(inspection, /cancelled/);
+  assert.ok(harness.removed.includes(77));
+});

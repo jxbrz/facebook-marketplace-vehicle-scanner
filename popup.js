@@ -13,7 +13,9 @@ const DEFAULTS = {
   maxMileage: null,
   unknownMileagePolicy: "keep",
   excludeCategories: ["S", "N", "C", "D"],
-  excludedKeywords: []
+  excludedKeywords: [],
+  acceptedMakes: [],
+  acceptedModels: []
 };
 
 const elements = {
@@ -31,12 +33,17 @@ const elements = {
   maxPrice: document.querySelector("#maxPrice"),
   maxMileage: document.querySelector("#maxMileage"),
   unknownMileagePolicy: document.querySelector("#unknownMileagePolicy"),
+  acceptedMakes: document.querySelector("#acceptedMakes"),
+  acceptedModels: document.querySelector("#acceptedModels"),
   excludedKeywords: document.querySelector("#excludedKeywords"),
   startScan: document.querySelector("#startScan"),
   stopScan: document.querySelector("#stopScan"),
   openResults: document.querySelector("#openResults"),
   retrySync: document.querySelector("#retrySync"),
   clearState: document.querySelector("#clearState"),
+  recoveryActions: document.querySelector("#recoveryActions"),
+  resumeScan: document.querySelector("#resumeScan"),
+  discardScan: document.querySelector("#discardScan"),
   status: document.querySelector("#status"),
   discovered: document.querySelector("#discovered"),
   processed: document.querySelector("#processed"),
@@ -151,7 +158,9 @@ async function saveSettings() {
     maxMileage: valueOrNull(elements.maxMileage),
     unknownMileagePolicy: elements.unknownMileagePolicy.value,
     excludeCategories: getSelectedCategories(),
-    excludedKeywords: getKeywords()
+    excludedKeywords: getKeywords(),
+    acceptedMakes: VehicleIdentity.normaliseMakeFilters(elements.acceptedMakes.value),
+    acceptedModels: VehicleIdentity.normaliseFilterValues(elements.acceptedModels.value)
   };
 
   await chrome.storage.local.set(next);
@@ -184,6 +193,8 @@ function updateProgress(progress) {
   elements.stopScan.disabled = !progress?.scanningActive;
   elements.openResults.disabled = !progress?.resultsUrl;
   elements.retrySync.disabled = !progress?.canRetrySync;
+  elements.startScan.disabled = Boolean(progress?.interrupted);
+  elements.recoveryActions.hidden = !progress?.interrupted;
 
   if (!progress?.scanId) {
     elements.status.textContent = "Ready to start a new hosted scan.";
@@ -201,6 +212,11 @@ function updateProgress(progress) {
       `${progress.matched}/${progress.targetMatches} matches · ` +
       `${progress.processed}/${progress.maximumProcessed} processed · ` +
       `${Math.floor((progress.elapsedSeconds || 0) / 60)}m ${(progress.elapsedSeconds || 0) % 60}s`;
+    return;
+  }
+
+  if (progress.interrupted) {
+    elements.status.textContent = "Interrupted scan found. Choose Resume scan or Discard scan.";
     return;
   }
 
@@ -228,6 +244,8 @@ async function initialise() {
   elements.maxPrice.value = stored.maxPrice ?? "";
   elements.maxMileage.value = stored.maxMileage ?? "";
   elements.unknownMileagePolicy.value = stored.unknownMileagePolicy ?? "keep";
+  elements.acceptedMakes.value = VehicleIdentity.normaliseMakeFilters(stored.acceptedMakes).join(", ");
+  elements.acceptedModels.value = VehicleIdentity.normaliseFilterValues(stored.acceptedModels).join(", ");
   elements.excludedKeywords.value = (stored.excludedKeywords ?? []).join("\n");
 
   const selected = new Set(stored.excludeCategories ?? ["S", "N", "C", "D"]);
@@ -266,6 +284,24 @@ elements.stopScan.addEventListener("click", async () => {
   try {
     elements.status.textContent = "Stopping and synchronising…";
     updateProgress(await sendToActiveTab({ type: "STOP_SCAN" }));
+  } catch (error) {
+    elements.status.textContent = error.message || String(error);
+  }
+});
+
+elements.resumeScan.addEventListener("click", async () => {
+  try {
+    elements.status.textContent = "Resuming interrupted scan…";
+    updateProgress(await sendToActiveTab({ type: "RESUME_SCAN" }));
+  } catch (error) {
+    elements.status.textContent = error.message || String(error);
+  }
+});
+
+elements.discardScan.addEventListener("click", async () => {
+  try {
+    elements.status.textContent = "Discarding interrupted scan…";
+    updateProgress(await sendToActiveTab({ type: "DISCARD_INTERRUPTED_SCAN" }));
   } catch (error) {
     elements.status.textContent = error.message || String(error);
   }

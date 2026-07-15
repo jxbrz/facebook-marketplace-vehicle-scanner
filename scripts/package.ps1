@@ -11,6 +11,8 @@ $runtimeFiles = @(
   "content.js",
   "category-detector.js",
   "mileage-utils.js",
+  "scanner-lifecycle.js",
+  "vehicle-identity.js",
   "listing-details-extractor.js",
   "payload-normalizer.js",
   "popup.html",
