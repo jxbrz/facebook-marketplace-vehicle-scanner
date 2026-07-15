@@ -9,6 +9,19 @@
 })(typeof globalThis === "object" ? globalThis : this, function createPayloadNormalizer() {
   "use strict";
 
+  const LIMITS = {
+    fullDescriptionCharacters: 20000,
+    imageCount: 20,
+    urlCharacters: 4000,
+    attributeCount: 40,
+    attributeKeyCharacters: 80,
+    attributeValueCharacters: 500,
+    sellerNameCharacters: 240,
+    listedAtTextCharacters: 240
+  };
+
+  const SENSITIVE_ATTRIBUTE_PATTERN = /(?:authorization|bearer|cookie|password|session|token|private\s*message)/i;
+
   function normaliseRemoteInteger(value, minimum = 0, maximum = null) {
     if (value === null || value === undefined || value === "") return null;
     const number = Number(value);
@@ -55,6 +68,57 @@
       throw new Error(`${field} exceeds 4000 characters.`);
     }
     return normalised;
+  }
+
+  function normalisePreservedText(value, maximumLength) {
+    if (typeof value !== "string") return null;
+    const text = value.replace(/\r\n?/g, "\n").trim();
+    return text ? text.slice(0, maximumLength) : null;
+  }
+
+  function normaliseImageUrls(value) {
+    if (!Array.isArray(value)) return [];
+    const urls = [];
+    for (const item of value) {
+      try {
+        const url = normaliseHttpUrl(item, "imageUrls item");
+        if (!urls.includes(url)) urls.push(url);
+      } catch {
+        // Optional malformed images are omitted; sourceUrl remains fail-closed.
+      }
+      if (urls.length >= LIMITS.imageCount) break;
+    }
+    return urls;
+  }
+
+  function normaliseVehicleAttributes(value) {
+    const result = Object.create(null);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return result;
+    const entries = Object.entries(value)
+      .filter(([key]) => !["__proto__", "constructor", "prototype"].includes(key.toLowerCase()))
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    for (const [rawKey, rawValue] of entries) {
+      if (Object.keys(result).length >= LIMITS.attributeCount) break;
+      if (!["string", "number", "boolean"].includes(typeof rawValue)) continue;
+      const key = normaliseNullableText(rawKey, LIMITS.attributeKeyCharacters);
+      const content = normaliseNullableText(rawValue, LIMITS.attributeValueCharacters);
+      if (!key || !content || SENSITIVE_ATTRIBUTE_PATTERN.test(key)) continue;
+      result[key] = content;
+    }
+    return result;
+  }
+
+  function normaliseFacebookProfileUrl(value) {
+    let url;
+    try {
+      url = normaliseHttpUrl(value, "sellerProfileUrl", true);
+    } catch {
+      return null;
+    }
+    if (!url) return null;
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostname === "facebook.com" || hostname.endsWith(".facebook.com") ? url : null;
   }
 
   function normaliseTimestamp(value) {
@@ -119,7 +183,13 @@
       transmission: normaliseNullableText(listing.transmission, 80),
       bodyStyle: normaliseNullableText(listing.bodyStyle, 80),
       imageUrl: normaliseHttpUrl(listing.imageUrl, "imageUrl", true),
+      imageUrls: normaliseImageUrls(listing.imageUrls),
       descriptionExcerpt: normaliseNullableText(listing.descriptionExcerpt, 2000),
+      fullDescription: normalisePreservedText(listing.fullDescription, LIMITS.fullDescriptionCharacters),
+      vehicleAttributes: normaliseVehicleAttributes(listing.vehicleAttributes),
+      sellerName: normalisePreservedText(listing.sellerName, LIMITS.sellerNameCharacters),
+      sellerProfileUrl: normaliseFacebookProfileUrl(listing.sellerProfileUrl),
+      listedAtText: normalisePreservedText(listing.listedAtText, LIMITS.listedAtTextCharacters),
       status,
       rejectionCode: normaliseNullableText(listing.rejectionCode, 120),
       rejectionReason: normaliseNullableText(listing.rejectionReason, 1000),
@@ -132,5 +202,5 @@
     };
   }
 
-  return { normaliseRemoteInteger, normaliseRemoteListing };
+  return { LIMITS, normaliseRemoteInteger, normaliseRemoteListing };
 });

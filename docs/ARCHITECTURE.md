@@ -10,7 +10,8 @@ The hosted Next.js application authenticates extension requests, validates struc
 
 - `manifest.json`: MV3 configuration, fixed key, permissions, background worker, popup, and ordered content scripts.
 - `content.js`: scan state machine, DOM discovery, durable ledger, filtering, limits, persistence, recovery, and upload scheduling.
-- `background.js`: bounded Facebook fetch queue and authenticated dashboard request boundary.
+- `background.js`: bounded Facebook fetch queue, conservative structured-detail extraction call, and authenticated dashboard request boundary.
+- `listing-details-extractor.js`: pure embedded JSON/JSON-LD listing-object extraction with listing-ID scoping and semantic `og:image` fallback. Only named description/photo/attribute/seller/date fields are considered.
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
 - `payload-normalizer.js`: pure final upload normalization and validation.
 - `popup.*`: local configuration and lifecycle controls.
@@ -28,6 +29,12 @@ Compatibility-sensitive local keys include:
 - dashboard URL, API token, scan limit, filter, and category setting keys.
 
 The active-run state's internal `version` remains `19`. Code release versions are independent of that persisted schema number.
+
+## Phase 1 review data
+
+The extension stores structured extraction results in the existing bounded cached result and durable ledger flow. Restored outcomes are rebuilt through the current payload normalizer, so missing v23 fields become null/empty values without requiring local-state clearing. Gallery order follows Facebook's listing-photo order; duplicates and malformed URLs are removed and the existing card image remains the compatible primary fallback.
+
+Facebook CDN URLs are references, not archived assets, and may expire. The server never fetches them. Seller extraction is limited to the display name and Facebook profile URL present on the listing object; the extension never opens or traverses a seller profile. When a named listing object is unavailable or does not match the requested listing ID, uncertain detail fields are omitted.
 
 ## Stopping invariants
 

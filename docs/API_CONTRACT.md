@@ -26,11 +26,14 @@ Listing fields:
 
 - required: `externalListingId`, absolute HTTP(S) `sourceUrl`, `status`;
 - optional/nullable: title, integer price, three-letter currency, year 1886-2100, integer mileage, location, seller/fuel/transmission/body style, HTTP(S) image URL, description excerpt;
+- optional v23 review fields: full description (20,000 characters), up to 20 unique HTTP(S) image URLs (4,000 characters each), up to 40 vehicle-attribute string pairs (80-character keys and 500-character values), seller name (240 characters), HTTP(S) seller profile URL (4,000 characters), and visible listing-date text (240 characters);
 - classification: rejection code/reason, category detected flag/type, extraction source;
 - diagnostics: bounded `rawMetadata` object;
 - timing: offset-aware ISO `discoveredAt` and `processedAt`.
 
 Listing status is exactly `matched`, `rejected`, or `unavailable`. The existing generic rejection code `category` remains unchanged for dashboard compatibility; `categoryType` carries S/N/C/D.
+
+The v23 fields are optional, so old v19-v22 payloads and restored runs remain valid. The extension omits malformed optional image/profile URLs and non-serialisable or credential-shaped attributes before upload; the server independently validates and rejects malformed or excessive values. Description trimming preserves internal line breaks. The 256 KB request limit is unchanged.
 
 ### `PATCH /api/extension/scans/:scanId/progress`
 

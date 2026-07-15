@@ -10,6 +10,7 @@ $runtimeFiles = @(
   "background.js",
   "content.js",
   "category-detector.js",
+  "listing-details-extractor.js",
   "payload-normalizer.js",
   "popup.html",
   "popup.js",

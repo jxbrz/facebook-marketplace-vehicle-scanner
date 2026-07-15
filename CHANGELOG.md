@@ -1,5 +1,13 @@
 # Changelog
 
+## 23.0.0 - 2026-07-15
+
+- Added conservative embedded-JSON extraction for full advert descriptions, listing photos, structured vehicle attributes, seller display details, and visible listing-date wording.
+- Added bounded v23 payload fields with description line-break preservation, gallery deduplication, HTTP(S) URL validation, deterministic JSON-safe attributes, and backward-compatible defaults.
+- Added fixture tests that keep avatars, recommendations, advertisements, and non-Facebook image hosts out of captured galleries.
+- Added support for the dashboard's authenticated individual vehicle-review route while preserving the primary image, excerpt, scanner lifecycle, storage keys, permissions, manifest key, and fixed extension ID.
+- Documented that Facebook image URLs can expire and are not archived in Phase 1.
+
 ## 22.0.0 - 2026-07-15
 
 - Added controlled two-direction insurance category detection for S/N/C/D wording, common misspellings, Unicode separators, and local negation.

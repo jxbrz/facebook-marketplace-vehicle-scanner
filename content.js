@@ -875,11 +875,17 @@ function buildRemoteListing(entry, result = null) {
     transmission: metadata.transmission || null,
     bodyStyle: null,
     imageUrl: metadata.imageUrl || null,
+    imageUrls: Array.isArray(result?.imageUrls) ? result.imageUrls : [],
     descriptionExcerpt: result?.evidenceExcerpt
       ? truncate(result.evidenceExcerpt, 600)
       : result?.context
         ? truncate(result.context, 600)
         : null,
+    fullDescription: result?.fullDescription || null,
+    vehicleAttributes: result?.vehicleAttributes || {},
+    sellerName: result?.sellerName || null,
+    sellerProfileUrl: result?.sellerProfileUrl || null,
+    listedAtText: result?.listedAtText || null,
     status: entry.status,
     rejectionCode: entry.code || null,
     rejectionReason: entry.reason || null,

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { normaliseRemoteListing } = require("../payload-normalizer.js");
+const { LIMITS, normaliseRemoteListing } = require("../payload-normalizer.js");
 
 function listing(overrides = {}) {
   return {
@@ -64,4 +64,52 @@ test("normalises valid category, currency, URLs, and nullable text", () => {
   assert.equal(result.currency, "GBP");
   assert.equal(result.imageUrl, "https://example.com/car.jpg");
   assert.equal(result.location, "Leeds");
+});
+
+test("preserves full-description line breaks and remains backward compatible", () => {
+  const oldResult = normaliseRemoteListing(listing());
+  assert.equal(oldResult.fullDescription, null);
+  assert.deepEqual(oldResult.imageUrls, []);
+  assert.deepEqual({ ...oldResult.vehicleAttributes }, {});
+
+  const result = normaliseRemoteListing(listing({
+    fullDescription: "  First line\r\n\r\nSecond line  "
+  }));
+  assert.equal(result.fullDescription, "First line\n\nSecond line");
+});
+
+test("deduplicates, caps, and safely omits malformed image URLs", () => {
+  const urls = [
+    "https://example.com/one.jpg",
+    "https://example.com/one.jpg",
+    "javascript:alert(1)",
+    ...Array.from({ length: LIMITS.imageCount + 5 }, (_, index) => `https://example.com/${index}.jpg`)
+  ];
+  const result = normaliseRemoteListing(listing({ imageUrls: urls }));
+  assert.equal(result.imageUrls.length, LIMITS.imageCount);
+  assert.equal(result.imageUrls[0], "https://example.com/one.jpg");
+  assert.equal(result.imageUrls.some(url => url.startsWith("javascript:")), false);
+});
+
+test("normalises attributes to a bounded deterministic plain JSON-safe map", () => {
+  const value = Object.create(null);
+  value.Transmission = "Manual";
+  value.Mileage = 72000;
+  value.AuthorizationToken = "must not upload";
+  value.Nested = { unsafe: true };
+  const result = normaliseRemoteListing(listing({ vehicleAttributes: value }));
+  assert.deepEqual(Object.keys(result.vehicleAttributes), ["Mileage", "Transmission"]);
+  assert.equal(result.vehicleAttributes.Mileage, "72000");
+  assert.equal(Object.getPrototypeOf(result.vehicleAttributes), null);
+});
+
+test("bounds seller names and accepts only Facebook profile URLs", () => {
+  const result = normaliseRemoteListing(listing({
+    sellerName: "x".repeat(LIMITS.sellerNameCharacters + 50),
+    sellerProfileUrl: "https://evil.example/profile/123",
+    listedAtText: "Listed 2 days ago"
+  }));
+  assert.equal(result.sellerName.length, LIMITS.sellerNameCharacters);
+  assert.equal(result.sellerProfileUrl, null);
+  assert.equal(result.listedAtText, "Listed 2 days ago");
 });

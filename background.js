@@ -1,4 +1,4 @@
-importScripts("category-detector.js", "payload-normalizer.js");
+importScripts("category-detector.js", "listing-details-extractor.js", "payload-normalizer.js");
 
 const MAX_CONCURRENT_REQUESTS = 3;
 const MIN_START_GAP_MS = 350;
@@ -224,6 +224,7 @@ async function inspectListing(url) {
 
   const html = await response.text();
   const listingId = getListingIdFromUrl(url);
+  const listingDetails = ListingDetailsExtractor.extractListingDetails(html, { listingId });
   const scoped = extractScopedText(html, listingId);
 
   let category = extractCategory(scoped.text, "facebook-listing-page");
@@ -257,6 +258,7 @@ async function inspectListing(url) {
   return {
     ...category,
     ...metadata,
+    ...listingDetails,
     listingId,
     evidenceExcerpt,
     extractionSource,
