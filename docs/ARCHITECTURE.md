@@ -10,8 +10,8 @@ The hosted Next.js application authenticates extension requests, validates struc
 
 - `manifest.json`: MV3 configuration, fixed key, permissions, background worker, popup, and ordered content scripts.
 - `content.js`: scan state machine, DOM discovery, durable ledger, filtering, limits, persistence, recovery, and upload scheduling.
-- `background.js`: bounded Facebook fetch queue, conservative structured-detail extraction call, and authenticated dashboard request boundary.
-- `listing-details-extractor.js`: pure embedded JSON/JSON-LD listing-object extraction with listing-ID scoping and semantic `og:image` fallback. Only named description/photo/attribute/seller/date fields are considered.
+- `background.js`: bounded Facebook fetch queue, serialized inactive-tab rendered fallback with timeout/cleanup, and authenticated dashboard request boundary.
+- `listing-details-extractor.js`: bounded listing-ID/canonical-URL embedded traversal, semantic rendered-section extraction, and reusable media ranking. `og:image` is the final image fallback.
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
 - `payload-normalizer.js`: pure final upload normalization and validation.
 - `popup.*`: local configuration and lifecycle controls.
@@ -35,6 +35,8 @@ The active-run state's internal `version` remains `19`. Code release versions ar
 The extension stores structured extraction results in the existing bounded cached result and durable ledger flow. Restored outcomes are rebuilt through the current payload normalizer, so missing v23 fields become null/empty values without requiring local-state clearing. Gallery order follows Facebook's listing-photo order; duplicates and malformed URLs are removed and the existing card image remains the compatible primary fallback.
 
 Facebook CDN URLs are references, not archived assets, and may expire. The server never fetches them. Seller extraction is limited to the display name and Facebook profile URL present on the listing object; the extension never opens or traverses a seller profile. When a named listing object is unavailable or does not match the requested listing ID, uncertain detail fields are omitted.
+
+Static service-worker fetches can contain only Facebook's initial HTML and omit Relay-hydrated detail. When required fields are incomplete, the background worker creates at most one inactive blank tab, marks it as controlled before navigating it to the item, waits for the existing authenticated page to render, requests only the semantic listing snapshot, and closes the tab in all outcomes. The scanner content script checks that tab marker and skips initialization only there; ordinary visible item navigation retains the existing stop/recovery behavior. Permissions, storage keys, and the visible search tab are unchanged.
 
 ## Stopping invariants
 

@@ -17,7 +17,8 @@
     attributeKeyCharacters: 80,
     attributeValueCharacters: 500,
     sellerNameCharacters: 240,
-    listedAtTextCharacters: 240
+    listedAtTextCharacters: 240,
+    mileageOriginalTextCharacters: 120
   };
 
   const SENSITIVE_ATTRIBUTE_PATTERN = /(?:authorization|bearer|cookie|password|session|token|private\s*message)/i;
@@ -165,6 +166,12 @@
       throw new Error("categoryType is required when categoryDetected is true.");
     }
 
+    const mileageValue = normaliseRemoteInteger(listing.mileageValue, 0, 1000000);
+    const mileageUnit = ["mi", "km"].includes(listing.mileageUnit)
+      ? listing.mileageUnit
+      : null;
+    const hasSourceMileage = mileageValue !== null && mileageUnit !== null;
+
     return {
       externalListingId: normaliseRequiredText(
         listing.externalListingId,
@@ -177,6 +184,11 @@
       currency: normaliseCurrency(listing.currency),
       year: normaliseRemoteInteger(listing.year, 1886, 2100),
       mileage: normaliseRemoteInteger(listing.mileage),
+      mileageValue: hasSourceMileage ? mileageValue : null,
+      mileageUnit: hasSourceMileage ? mileageUnit : null,
+      mileageOriginalText: hasSourceMileage
+        ? normalisePreservedText(listing.mileageOriginalText, LIMITS.mileageOriginalTextCharacters)
+        : null,
       location: normaliseNullableText(listing.location, 240),
       sellerType: normaliseNullableText(listing.sellerType, 80),
       fuelType: normaliseNullableText(listing.fuelType, 80),

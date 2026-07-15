@@ -9,15 +9,15 @@ The extension remains a plain-JavaScript, unpacked-loadable project. There is no
 ```text
 Facebook Marketplace tab
   -> content.js: discovery, limits, filtering, durable scan ledger
-  -> background.js: authenticated listing fetches and dashboard requests
+  -> background.js: authenticated listing fetches and bounded rendered-detail fallback
   -> Vercel extension API: validation and lifecycle persistence
   -> Neon Postgres
   -> private dashboard
 ```
 
 - `content.js` owns Facebook card discovery, filtering, stopping, the active-run ledger, upload queueing, and recovery.
-- `background.js` owns controlled listing-page requests and Bearer-authenticated dashboard requests.
-- `listing-details-extractor.js` conservatively reads named listing objects from embedded JSON/JSON-LD and semantic listing images; it does not traverse profiles or scrape unrelated page content.
+- `background.js` owns controlled listing-page requests, one-at-a-time inactive detail-tab fallback, and Bearer-authenticated dashboard requests.
+- `listing-details-extractor.js` first reads bounded listing-ID/canonical-URL scoped embedded data, then extracts semantic rendered sections and listing-owned carousel images when static HTML is incomplete.
 - `category-detector.js` is a pure shared detector loaded by both extension contexts and by Node tests.
 - `payload-normalizer.js` is the final upload-boundary normalizer and is also covered by Node tests.
 - The hosted application is authoritative for stored listings, lifecycle state, dashboard actions, and scan history. It never accesses Facebook.
@@ -66,7 +66,7 @@ chrome-extension://aipljeeiecdcnkbbakphcddacbbgkpmf
 1. The extension creates a hosted scan.
 2. It discovers Facebook cards and records them in a durable local ledger.
 3. Card filters run locally; eligible listings are fetched with the existing Facebook session.
-4. Card and page text are checked for controlled S/N/C/D insurance-category wording, while named listing structures supply available full description, listing photos, vehicle attributes, seller display name/profile URL, and visible listing-date wording.
+4. Card and page text are checked for controlled S/N/C/D insurance-category wording. Listing-scoped embedded data supplies details first; when it is incomplete, one inactive authenticated item tab extracts rendered description, vehicle facts, and gallery media, then always closes.
 5. Completed outcomes are uploaded in idempotent batches.
 6. Scanning stops at the first target, processed, duration, no-more-results, user, navigation, or error condition.
 7. Pending completed outcomes upload before the hosted scan completes.
@@ -84,7 +84,7 @@ The active run is stored under the existing `scannerV19:activeRun` key with stat
 
 On reload, queued work returns to discovered state, final results stay durable, and unsynchronised payloads are rebuilt from the ledger through the latest normalizer. If the hosted scan no longer exists, the extension creates a replacement scan and replays durable outcomes before completion.
 
-Version 23 adds only optional upload fields. It caps descriptions at 20,000 characters, gallery URLs at 20, and vehicle attributes at 40 bounded string pairs. Malformed optional image/profile URLs and unsafe attribute values are omitted. Facebook CDN URLs may expire; Phase 1 neither downloads nor archives images.
+Version 23 adds only optional upload fields. Version 23.0.1 also carries optional source mileage value/unit/original text so kilometres are not relabelled as miles. It caps descriptions at 20,000 characters, gallery URLs at 20, and vehicle attributes at 40 bounded string pairs. Malformed optional image/profile URLs and unsafe attribute values are omitted. Facebook CDN URLs may expire; Phase 1 neither downloads nor archives images.
 
 Use **Clear local state** only after remote completion. See [docs/RECOVERY.md](docs/RECOVERY.md).
 

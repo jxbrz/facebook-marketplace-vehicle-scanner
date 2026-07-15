@@ -3,13 +3,87 @@ importScripts("category-detector.js", "listing-details-extractor.js", "payload-n
 const MAX_CONCURRENT_REQUESTS = 3;
 const MIN_START_GAP_MS = 350;
 const REQUEST_TIMEOUT_MS = 15000;
+const RENDERED_INSPECTION_TIMEOUT_MS = 12000;
 
 const pendingJobs = [];
 const jobsByUrl = new Map();
+const controlledDetailTabIds = new Set();
 
 let activeRequests = 0;
 let lastRequestStartedAt = 0;
 let pumpTimer = null;
+let renderedInspectionChain = Promise.resolve();
+
+function waitForTabComplete(tabId) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      error ? reject(error) : resolve();
+    };
+    const onUpdated = (updatedTabId, changeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") finish();
+    };
+    const onRemoved = removedTabId => {
+      if (removedTabId === tabId) finish(new Error("Rendered inspection tab closed before loading."));
+    };
+    const timeout = setTimeout(
+      () => finish(new Error("Rendered inspection timed out while loading.")),
+      RENDERED_INSPECTION_TIMEOUT_MS
+    );
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === "complete") finish();
+    }).catch(finish);
+  });
+}
+
+async function requestRenderedDetails(tabId, listingId) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        type: "EXTRACT_RENDERED_LISTING_DETAILS",
+        listingId
+      });
+      if (!response?.ok) throw new Error(response?.error || "Rendered extractor returned no result.");
+      return response.result;
+    } catch (error) {
+      lastError = error;
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  }
+  throw lastError || new Error("Rendered extractor was unavailable.");
+}
+
+async function inspectRenderedListing(url, listingId) {
+  let tabId = null;
+  try {
+    const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+    if (!Number.isInteger(tab.id)) throw new Error("Rendered inspection tab was not created.");
+    tabId = tab.id;
+    controlledDetailTabIds.add(tabId);
+    await chrome.tabs.update(tabId, { url });
+    await waitForTabComplete(tabId);
+    return await requestRenderedDetails(tabId, listingId);
+  } finally {
+    if (tabId !== null) {
+      controlledDetailTabIds.delete(tabId);
+      await chrome.tabs.remove(tabId).catch(() => {});
+    }
+  }
+}
+
+function queueRenderedInspection(url, listingId) {
+  const inspection = renderedInspectionChain.then(() => inspectRenderedListing(url, listingId));
+  renderedInspectionChain = inspection.catch(() => {});
+  return inspection;
+}
 
 function decodeHtmlEntities(value) {
   return value
@@ -52,8 +126,8 @@ function extractCategory(text, source) {
 function extractMileage(text) {
   const candidates = [
     /\b(\d{1,3}(?:,\d{3})+)\s*(?:miles?|mi)\b/i,
-    /\b(\d{1,3}(?:\.\d{1,2})?)\s*k\s*(?:miles?|mi)?\b/i,
-    /\bmileage\s*[:\-]?\s*(\d{1,3}(?:,\d{3})+|\d{3,6})\b/i
+    /\b(\d{1,3}(?:\.\d{1,2})?)\s*k\s*(?:miles?|mi)?\b(?!\s*(?:km|kilomet))/i,
+    /\bmileage\s*[:\-]?\s*(\d{1,3}(?:,\d{3})+|\d{3,6})\b(?!\s*(?:km|kilomet))/i
   ];
 
   for (const pattern of candidates) {
@@ -224,7 +298,18 @@ async function inspectListing(url) {
 
   const html = await response.text();
   const listingId = getListingIdFromUrl(url);
-  const listingDetails = ListingDetailsExtractor.extractListingDetails(html, { listingId });
+  let listingDetails = ListingDetailsExtractor.extractListingDetails(html, {
+    listingId,
+    canonicalUrl: response.url || url
+  });
+  if (listingId && ListingDetailsExtractor.needsRenderedFallback(listingDetails)) {
+    try {
+      const renderedDetails = await queueRenderedInspection(response.url || url, listingId);
+      listingDetails = ListingDetailsExtractor.mergeListingDetails(listingDetails, renderedDetails);
+    } catch {
+      // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
+    }
+  }
   const scoped = extractScopedText(html, listingId);
 
   let category = extractCategory(scoped.text, "facebook-listing-page");
@@ -262,6 +347,7 @@ async function inspectListing(url) {
     listingId,
     evidenceExcerpt,
     extractionSource,
+    listingDetailExtractionSource: listingDetails.extractionSource,
     scopeLength: extractionText.length,
     finalUrl: response.url,
     responseLength: html.length,
@@ -604,6 +690,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return respond(
       queueInspection(message.url, Number(message.priority) || 0)
     );
+  }
+
+  if (message?.type === "IS_CONTROLLED_DETAIL_TAB") {
+    sendResponse({
+      ok: true,
+      result: Number.isInteger(sender.tab?.id) && controlledDetailTabIds.has(sender.tab.id)
+    });
+    return false;
   }
 
   if (message?.type === "REMOTE_CREATE_SCAN") {

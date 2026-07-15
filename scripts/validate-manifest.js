@@ -15,14 +15,24 @@ const expectedHostPermissions = [
 
 assert.equal(manifest.manifest_version, 3);
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-assert.equal(manifest.version, "23.0.0");
+assert.equal(manifest.version, "23.0.1");
 assert.ok(typeof manifest.key === "string" && manifest.key.length > 100);
 assert.deepEqual(manifest.permissions, expectedPermissions);
 assert.deepEqual(manifest.host_permissions, expectedHostPermissions);
 assert.deepEqual(manifest.content_scripts[0].js, [
   "category-detector.js",
+  "mileage-utils.js",
   "content.js"
 ]);
+assert.equal(manifest.content_scripts[0].exclude_matches, undefined);
+assert.deepEqual(manifest.content_scripts[1], {
+  matches: [
+    "https://www.facebook.com/marketplace/item/*",
+    "https://facebook.com/marketplace/item/*"
+  ],
+  js: ["listing-details-extractor.js"],
+  run_at: "document_idle"
+});
 
 const digest = crypto
   .createHash("sha256")

@@ -43,6 +43,24 @@ test("uses null for unknown or out-of-range optional numeric values", () => {
   assert.equal(result.title, null);
 });
 
+test("preserves source mileage units only when value and unit form a valid pair", () => {
+  const result = normaliseRemoteListing(listing({
+    mileage: null,
+    mileageValue: 68600,
+    mileageUnit: "km",
+    mileageOriginalText: "68,600 km"
+  }));
+  assert.equal(result.mileage, null);
+  assert.equal(result.mileageValue, 68600);
+  assert.equal(result.mileageUnit, "km");
+  assert.equal(result.mileageOriginalText, "68,600 km");
+
+  const incomplete = normaliseRemoteListing(listing({ mileageValue: 68600 }));
+  assert.equal(incomplete.mileageValue, null);
+  assert.equal(incomplete.mileageUnit, null);
+  assert.equal(incomplete.mileageOriginalText, null);
+});
+
 test("validates required URLs, statuses, categories, and metadata shape", () => {
   assert.throws(() => normaliseRemoteListing(listing({ sourceUrl: "javascript:alert(1)" })), /HTTP or HTTPS/);
   assert.throws(() => normaliseRemoteListing(listing({ status: "pending" })), /status/);

@@ -372,9 +372,7 @@ function evaluateFilters(metadata, result = null) {
     price: toNullableNonNegativeInteger(
       metadata.price ?? result?.price
     ),
-    mileage: toNullableNonNegativeInteger(
-      metadata.mileage ?? result?.mileage
-    ),
+    mileage: getMileageForFilter(metadata, result),
     category: result?.category ?? null,
     categoryDetected: Boolean(result?.detected),
     cardText: metadata.cardText || ""
@@ -836,8 +834,20 @@ function toNullableVehicleYear(value) {
   return year;
 }
 
+function getMileageForFilter(metadata, result) {
+  return MileageUtils.sourceMileageInMiles(
+    result?.mileageDetail,
+    metadata.mileage ?? result?.mileage
+  );
+}
+
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
+  const mileageValue = toNullableNonNegativeInteger(result?.mileageDetail?.value);
+  const mileageUnit = ["mi", "km"].includes(result?.mileageDetail?.unit)
+    ? result.mileageDetail.unit
+    : null;
+  const hasSourceMileage = mileageValue !== null && mileageUnit !== null;
   const categoryEvidence = Array.isArray(result?.evidence)
     ? result.evidence.slice(0, 10).map(item => ({
         category: item.category,
@@ -868,13 +878,20 @@ function buildRemoteListing(entry, result = null) {
     price: metadata.price ?? result?.price ?? null,
     currency: "GBP",
     year: metadata.year ?? result?.year ?? null,
-    mileage: metadata.mileage ?? result?.mileage ?? null,
+    mileage: hasSourceMileage
+      ? mileageUnit === "mi" ? mileageValue : null
+      : metadata.mileage ?? result?.mileage ?? null,
+    mileageValue: hasSourceMileage ? mileageValue : null,
+    mileageUnit: hasSourceMileage ? mileageUnit : null,
+    mileageOriginalText: hasSourceMileage
+      ? truncate(result?.mileageDetail?.originalText, 120)
+      : null,
     location: metadata.location || null,
     sellerType: metadata.sellerType || null,
-    fuelType: metadata.fuelType || null,
-    transmission: metadata.transmission || null,
+    fuelType: metadata.fuelType || result?.fuelType || null,
+    transmission: metadata.transmission || result?.transmission || null,
     bodyStyle: null,
-    imageUrl: metadata.imageUrl || null,
+    imageUrl: result?.primaryImageUrl || metadata.imageUrl || null,
     imageUrls: Array.isArray(result?.imageUrls) ? result.imageUrls : [],
     descriptionExcerpt: result?.evidenceExcerpt
       ? truncate(result.evidenceExcerpt, 600)
@@ -892,7 +909,7 @@ function buildRemoteListing(entry, result = null) {
     categoryDetected: Boolean(result?.detected),
     categoryType: result?.category || null,
     extractionSource:
-      result?.source || result?.extractionSource || entry.source || null,
+      result?.listingDetailExtractionSource || result?.source || result?.extractionSource || entry.source || null,
     rawMetadata: {
       cardText: truncate(metadata.cardText, 1500),
       categoryMatch: result?.match || null,
@@ -2203,33 +2220,37 @@ const observer = new MutationObserver(mutations => {
   }, CONFIG.scanDebounceMs);
 });
 
-observer.observe(document.documentElement, {
-  childList: true,
-  subtree: true
-});
+async function initialiseScanner() {
+  const controlledDetailTab = await sendBackground({ type: "IS_CONTROLLED_DETAIL_TAB" })
+    .catch(() => false);
+  if (controlledDetailTab) return;
 
-window.addEventListener("scroll", () => {
-  if (!scanningActive || isListingRoute()) return;
-
-  clearTimeout(scrollTimer);
-  scrollTimer = setTimeout(() => scheduleScan(0), CONFIG.scanDebounceMs);
-}, { passive: true });
-
-window.addEventListener("popstate", () => {
-  currentRouteKey = getRouteKey();
-
-  if (scanningActive && sourceSearchRouteKey === currentRouteKey) {
-    scheduleScan(100);
-  }
-});
-
-cleanupLegacyCardDecorations();
-loadSettings()
-  .then(restoreActiveRun)
-  .then(restored => {
-    if (!restored) updateProgress();
-  })
-  .catch(error => {
-    console.error("Marketplace Vehicle Scanner initialisation failed:", error);
-    updateProgress();
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true
   });
+
+  window.addEventListener("scroll", () => {
+    if (!scanningActive || isListingRoute()) return;
+
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => scheduleScan(0), CONFIG.scanDebounceMs);
+  }, { passive: true });
+
+  window.addEventListener("popstate", () => {
+    currentRouteKey = getRouteKey();
+
+    if (scanningActive && sourceSearchRouteKey === currentRouteKey) {
+      scheduleScan(100);
+    }
+  });
+
+  cleanupLegacyCardDecorations();
+  const restored = await loadSettings().then(restoreActiveRun);
+  if (!restored) updateProgress();
+}
+
+initialiseScanner().catch(error => {
+  console.error("Marketplace Vehicle Scanner initialisation failed:", error);
+  updateProgress();
+});

@@ -1,0 +1,90 @@
+{
+  "listingId": "1328662229386516",
+  "descriptionLines": [
+    "Seller's description",
+    "Well maintained family car with full service history.",
+    "Recent tyres and brakes. Viewings welcome.",
+    "See less"
+  ],
+  "aboutLines": [
+    "About this vehicle",
+    "Mileage: 68,600 km",
+    "Automatic transmission",
+    "Fuel type: Gasoline",
+    "Exterior colour: Brown · Interior colour: Black",
+    "ULEZ compliant"
+  ],
+  "listedAtText": "Listed about a week ago in London, United Kingdom",
+  "imageCandidates": [
+    {
+      "url": "https://scontent-lhr8-1.xx.fbcdn.net/listing-photo-1-thumb.jpg",
+      "width": 320,
+      "height": 180,
+      "mediaId": "photo-1",
+      "order": 0,
+      "source": "rendered-src",
+      "listingOwned": true,
+      "thumbnail": true
+    },
+    {
+      "url": "https://scontent-lhr8-1.xx.fbcdn.net/listing-photo-1-2048.jpg",
+      "width": 2048,
+      "height": 1152,
+      "mediaId": "photo-1",
+      "order": 0,
+      "source": "rendered-srcset",
+      "listingOwned": true,
+      "thumbnail": false
+    },
+    {
+      "url": "https://scontent-lhr8-1.xx.fbcdn.net/listing-photo-2-1600.jpg",
+      "width": 1600,
+      "height": 900,
+      "mediaId": "photo-2",
+      "order": 1,
+      "source": "rendered-srcset",
+      "listingOwned": true,
+      "thumbnail": false
+    },
+    {
+      "url": "https://scontent-lhr8-1.xx.fbcdn.net/listing-photo-3-1280.jpg",
+      "width": 1280,
+      "height": 720,
+      "mediaId": "photo-3",
+      "order": 2,
+      "source": "rendered-srcset",
+      "listingOwned": true,
+      "thumbnail": false
+    },
+    {
+      "url": "https://scontent-lhr8-1.xx.fbcdn.net/avatar.jpg",
+      "width": 200,
+      "height": 200,
+      "mediaId": "avatar",
+      "order": 3,
+      "source": "rendered-src",
+      "listingOwned": false,
+      "thumbnail": true
+    },
+    {
+      "url": "https://scontent-lhr8-1.xx.fbcdn.net/recommended-listing.jpg",
+      "width": 1200,
+      "height": 675,
+      "mediaId": "recommendation",
+      "order": 4,
+      "source": "rendered-srcset",
+      "listingOwned": false,
+      "thumbnail": false
+    },
+    {
+      "url": "https://tracking.example/sponsored.jpg",
+      "width": 1600,
+      "height": 900,
+      "mediaId": "advert",
+      "order": 5,
+      "source": "rendered-srcset",
+      "listingOwned": true,
+      "thumbnail": false
+    }
+  ]
+}

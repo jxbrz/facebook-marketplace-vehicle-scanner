@@ -1,5 +1,13 @@
 # Changelog
 
+## 23.0.1 - 2026-07-15
+
+- Added bounded listing-scoped ancestor traversal and semantic rendered-DOM fallback for descriptions and vehicle facts when Facebook's initial HTML is incomplete.
+- Added serialized inactive item-tab extraction with timeout and guaranteed cleanup, without changing scanner lifecycle, storage, permissions, key, or identity.
+- Preserved kilometre/mile provenance through optional payload fields so kilometre listings are not displayed as miles.
+- Ranked listing-owned embedded and rendered image candidates by media identity, order, dimensions, source quality, and thumbnail status while excluding unrelated content.
+- Added a sanitized regression fixture for listing `1328662229386516` covering multiline description, 68,600 km, automatic/gasoline/colours, gallery ordering, quality preference, and exclusions.
+
 ## 23.0.0 - 2026-07-15
 
 - Added conservative embedded-JSON extraction for full advert descriptions, listing photos, structured vehicle attributes, seller display details, and visible listing-date wording.
