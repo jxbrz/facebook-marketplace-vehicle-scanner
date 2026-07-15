@@ -63,3 +63,15 @@ test("fresh scan metadata snapshots accepted makes and models", () => {
   assert.match(payload, /acceptedMakes: settings\.acceptedMakes/);
   assert.match(payload, /acceptedModels: settings\.acceptedModels/);
 });
+
+test("only freshly inspected Facebook UK mileage receives the label correction", () => {
+  const normaliser = functionSource("normaliseFreshFacebookUkMileage", "function buildRemoteListing");
+  assert.match(normaliser, /source: "facebook_marketplace"/);
+  assert.match(normaliser, /market: "GB"/);
+
+  const processing = functionSource("processListing", "async function scanPage");
+  assert.match(processing, /normaliseFreshFacebookUkMileage\([\s\S]*await inspectListing/);
+
+  const restore = functionSource("restoreActiveRun", "async function clearLocalScannerState");
+  assert.doesNotMatch(restore, /normaliseFreshFacebookUkMileage/);
+});

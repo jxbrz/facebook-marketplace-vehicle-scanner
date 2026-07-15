@@ -20,7 +20,7 @@ node scripts/validate-manifest.js
 
 `npm run validate` runs the same suite. CI runs it on pushes and pull requests without secrets.
 
-Lifecycle tests cover idle startup, terminal reload, explicit interrupted recovery, sync-only recovery, Start/Resume gating, cleanup wiring, and run-scoped controlled-tab cancellation. Identity tests cover empty filters, aliases, token-aware models, unrelated wording, both-filter semantics, source priority, diagnostics, and old settings/payload compatibility. Existing detector, payload, and rendered-listing regressions remain unchanged.
+Lifecycle tests cover idle startup, terminal reload, explicit interrupted recovery, sync-only recovery, Start/Resume gating, cleanup wiring, and run-scoped controlled-tab cancellation. Identity tests cover empty filters, aliases, token-aware models, unrelated wording, both-filter semantics, source priority, diagnostics, and old settings/payload compatibility. Mileage tests cover the scoped Facebook UK label correction, unchanged numeric values and source text, miles-based filtering, historical compatibility, and generic kilometre behavior. Existing detector, payload, and rendered-listing regressions remain unchanged.
 
 ## Small end-to-end manual test
 
@@ -51,5 +51,6 @@ Expected flow:
 15. During an incomplete static-detail fetch, confirm any inactive item tab closes after extraction and does not stop or reset the scan.
 16. Reload with an active scan and verify **Interrupted scan found** appears without discovery; test Resume and Discard separately.
 17. After completion, wait 30 seconds, refresh, and reopen Marketplace; verify no scrolling, processing, controlled tabs, or remote scan creation.
+18. For a UK Facebook listing showing `68,600 km`, verify the dashboard displays `68,600 miles`, retains `68,600 km` as the source text, and records the label-correction provenance.
 
 Do not delete a production scan merely to test recovery. Use a disposable local or dedicated test scan.

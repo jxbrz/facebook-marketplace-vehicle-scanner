@@ -171,6 +171,9 @@
       ? listing.mileageUnit
       : null;
     const hasSourceMileage = mileageValue !== null && mileageUnit !== null;
+    const mileageUnitSource = mileageUnit === "mi" && listing.mileageUnitSource === "facebook_uk_label_correction"
+      ? listing.mileageUnitSource
+      : null;
 
     return {
       externalListingId: normaliseRequiredText(
@@ -189,6 +192,7 @@
       mileageOriginalText: hasSourceMileage
         ? normalisePreservedText(listing.mileageOriginalText, LIMITS.mileageOriginalTextCharacters)
         : null,
+      mileageUnitSource: hasSourceMileage ? mileageUnitSource : null,
       location: normaliseNullableText(listing.location, 240),
       sellerType: normaliseNullableText(listing.sellerType, 80),
       fuelType: normaliseNullableText(listing.fuelType, 80),

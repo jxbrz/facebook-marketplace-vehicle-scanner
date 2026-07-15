@@ -923,6 +923,17 @@ function getMileageForFilter(metadata, result) {
   );
 }
 
+function normaliseFreshFacebookUkMileage(result) {
+  if (!result?.mileageDetail) return result;
+  return {
+    ...result,
+    mileageDetail: MileageUtils.normaliseOperationalMileage(result.mileageDetail, {
+      source: "facebook_marketplace",
+      market: "GB"
+    })
+  };
+}
+
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
   const vehicleAttributes = { ...(result?.vehicleAttributes || {}) };
@@ -934,6 +945,9 @@ function buildRemoteListing(entry, result = null) {
     ? result.mileageDetail.unit
     : null;
   const hasSourceMileage = mileageValue !== null && mileageUnit !== null;
+  const mileageUnitSource = result?.mileageDetail?.unitSource === MileageUtils.FACEBOOK_UK_LABEL_CORRECTION
+    ? MileageUtils.FACEBOOK_UK_LABEL_CORRECTION
+    : null;
   const categoryEvidence = Array.isArray(result?.evidence)
     ? result.evidence.slice(0, 10).map(item => ({
         category: item.category,
@@ -972,6 +986,7 @@ function buildRemoteListing(entry, result = null) {
     mileageOriginalText: hasSourceMileage
       ? truncate(result?.mileageDetail?.originalText, 120)
       : null,
+    mileageUnitSource: hasSourceMileage ? mileageUnitSource : null,
     location: metadata.location || null,
     sellerType: metadata.sellerType || null,
     fuelType: metadata.fuelType || result?.fuelType || null,
@@ -1182,7 +1197,9 @@ async function processListing(entry, generation) {
   updateProgress();
 
   try {
-    const result = await inspectListing(listing.url, priority);
+    const result = normaliseFreshFacebookUkMileage(
+      await inspectListing(listing.url, priority)
+    );
 
     if (!scanIsRunning() || generation !== scanGeneration) return;
 

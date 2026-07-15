@@ -7,6 +7,7 @@
 - Kept terminal scans terminal; startup sync recovery may upload durable final outcomes but cannot create replacement scans or restart Facebook activity.
 - Added optional accepted make/model filters with explicit aliases, token-aware conservative matching, deterministic rejection diagnostics, and settings snapshots.
 - Stored detected advert identity through the existing bounded vehicle attributes and raw metadata without changing the dashboard API contract.
+- Corrected Facebook Marketplace UK mileage labelled `km` to operational miles without changing the numeric value, while preserving the source text and recording `facebook_uk_label_correction` provenance.
 
 ## 23.0.1 - 2026-07-15
 

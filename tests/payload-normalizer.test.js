@@ -54,11 +54,41 @@ test("preserves source mileage units only when value and unit form a valid pair"
   assert.equal(result.mileageValue, 68600);
   assert.equal(result.mileageUnit, "km");
   assert.equal(result.mileageOriginalText, "68,600 km");
+  assert.equal(result.mileageUnitSource, null);
 
   const incomplete = normaliseRemoteListing(listing({ mileageValue: 68600 }));
   assert.equal(incomplete.mileageValue, null);
   assert.equal(incomplete.mileageUnit, null);
   assert.equal(incomplete.mileageOriginalText, null);
+  assert.equal(incomplete.mileageUnitSource, null);
+});
+
+test("preserves explicit Facebook UK mileage correction provenance", () => {
+  const result = normaliseRemoteListing(listing({
+    mileage: 68600,
+    mileageValue: 68600,
+    mileageUnit: "mi",
+    mileageOriginalText: "68,600 km",
+    mileageUnitSource: "facebook_uk_label_correction"
+  }));
+  assert.equal(result.mileage, 68600);
+  assert.equal(result.mileageValue, 68600);
+  assert.equal(result.mileageUnit, "mi");
+  assert.equal(result.mileageOriginalText, "68,600 km");
+  assert.equal(result.mileageUnitSource, "facebook_uk_label_correction");
+});
+
+test("historical mileage without correction provenance remains unchanged", () => {
+  const result = normaliseRemoteListing(listing({
+    mileage: null,
+    mileageValue: 68600,
+    mileageUnit: "km",
+    mileageOriginalText: "68,600 km"
+  }));
+  assert.equal(result.mileage, null);
+  assert.equal(result.mileageValue, 68600);
+  assert.equal(result.mileageUnit, "km");
+  assert.equal(result.mileageUnitSource, null);
 });
 
 test("validates required URLs, statuses, categories, and metadata shape", () => {
