@@ -1,9 +1,9 @@
 {
   "name": "facebook-marketplace-vehicle-scanner",
-  "version": "23.0.6",
+  "version": "23.0.7",
   "private": true,
   "scripts": {
-    "check": "node --check background.js && node --check content.js && node --check popup.js && node --check category-detector.js && node --check listing-category-pipeline.js && node --check mileage-utils.js && node --check scanner-lifecycle.js && node --check scanner-diagnostics.js && node --check scanner-runtime.js && node --check vehicle-identity.js && node --check listing-details-extractor.js && node --check payload-normalizer.js",
+    "check": "node --check background.js && node --check content.js && node --check popup.js && node --check category-detector.js && node --check listing-category-pipeline.js && node --check mileage-utils.js && node --check scanner-lifecycle.js && node --check scanner-diagnostics.js && node --check scanner-runtime.js && node --check scanner-storage.js && node --check vehicle-identity.js && node --check listing-details-extractor.js && node --check payload-normalizer.js",
     "test": "node --test",
     "validate:manifest": "node scripts/validate-manifest.js",
     "validate": "npm run check && npm test && npm run validate:manifest",

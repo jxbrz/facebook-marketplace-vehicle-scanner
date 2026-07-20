@@ -54,7 +54,7 @@ Marks a scan terminal after uploads finish. Scan status is one of `completed`, `
 
 ### `GET /api/extension/scans/:scanId`
 
-Returns hosted lifecycle state for recovery. A missing ID returns `404 scan_not_found`; the extension may create a replacement scan and replay its durable ledger.
+Returns hosted lifecycle state for recovery. A missing ID returns `404 scan_not_found`; the extension may create a replacement only when all completed payloads remain pending locally. Confirmed uploads are intentionally not retained for replay.
 
 ## Accounting identity
 

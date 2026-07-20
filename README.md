@@ -88,7 +88,7 @@ processedCount = matchedCount + rejectedCount + unavailableCount
 
 ## Recovery
 
-The active run is stored under the existing `scannerV19:activeRun` key with state schema version `19`. Those names intentionally remain unchanged in v23 so saved v19-v22 runs remain readable.
+The active run remains under `scannerV19:activeRun`, but compact state schema `20` stores only lifecycle markers, minimum resume metadata, and payloads that are still waiting for dashboard confirmation. Schema 19 is migrated on startup without changing settings or authentication.
 
 On reload, queued work returns to discovered state but never restarts automatically. Interrupted work waits for Resume or Discard. Terminal unsynchronised payloads may upload without DOM discovery, auto-scroll, extraction, or controlled tabs. Missing hosted scans are recreated only from an explicit Retry sync/start flow, never merely because Facebook opened.
 

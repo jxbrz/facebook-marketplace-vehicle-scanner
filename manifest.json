@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kelmar Vehicle Scanner",
-  "version": "23.0.6",
+  "version": "23.0.7",
   "description": "Scan Facebook Marketplace vehicle listings and securely send results to a private sourcing dashboard.",
   "permissions": [
     "storage",
@@ -31,6 +31,7 @@
         "scanner-lifecycle.js",
         "scanner-diagnostics.js",
         "scanner-runtime.js",
+        "scanner-storage.js",
         "vehicle-identity.js",
         "content.js"
       ],

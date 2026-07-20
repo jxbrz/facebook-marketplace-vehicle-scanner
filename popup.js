@@ -197,6 +197,8 @@ function reasonLabel(reason) {
     duration_limit_reached: "time limit reached",
     no_more_results: "no more results found",
     user_stopped: "stopped by user",
+    storage_soft_limit: "paused to protect local recovery data",
+    storage_quota: "paused because resume protection is unavailable",
     extension_closed: "interrupted after navigation or restart",
     error: "scanner error"
   };
@@ -226,6 +228,18 @@ function updateProgress(progress) {
   elements.recoveryText.textContent = progress?.paused
     ? "Discovery, scrolling, and new listing work are stopped. Resume or stop this scan."
     : "Resume explicitly or discard only this interrupted run.";
+
+  if (progress?.storageHealth?.persistenceDegraded) {
+    elements.status.textContent =
+      "Scan paused because local resume protection is temporarily unavailable. Retry sync or reload after cleanup.";
+    return;
+  }
+
+  if (progress?.storageHealth?.nearSoftLimit) {
+    elements.status.textContent =
+      "Scanner local recovery storage is nearly full. Uploaded results are being cleaned automatically.";
+    return;
+  }
 
   if (!progress?.scanId) {
     elements.status.textContent = "Ready to start a new hosted scan.";

@@ -18,7 +18,7 @@ The final selections must match the live form’s current labels and the public 
 
 ## Processing and storage
 
-- On device: settings, API token, scan recovery state, progress, pending uploads and bounded listing caches in `chrome.storage.local`.
+- On device: settings, API token, compact scan recovery state, aggregate progress, and only uploads still awaiting dashboard confirmation in `chrome.storage.local`.
 - Transmitted: structured scan/listing data and progress over HTTPS to the Kelmar dashboard.
 - Server storage: Vercel-hosted application and Neon PostgreSQL database.
 - Human access: authorised dealership dashboard users; exceptional support/security access only with permission or legal/security need.

@@ -10,7 +10,7 @@ Google requires the narrowest permissions needed for the current purpose: <https
 
 ### `storage`
 
-- Feature: saves the production dashboard URL/API token, scan settings and filters, lifecycle recovery state, durable outcomes awaiting upload, runtime progress and a bounded 30-day listing cache.
+- Feature: saves the production dashboard URL/API token, scan settings and filters, compact lifecycle recovery state, durable outcomes awaiting upload, and aggregate runtime progress.
 - Data enabled: only extension-owned local data; it does not grant Facebook cookie access.
 - Why narrower is insufficient: service workers and Facebook content scripts need a shared durable store that survives popup closure and browser restart. In-memory state cannot provide safe interrupted-run confirmation or durable sync recovery.
 

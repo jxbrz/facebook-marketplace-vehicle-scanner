@@ -16,6 +16,7 @@ $runtimeFiles = @(
   "scanner-lifecycle.js",
   "scanner-diagnostics.js",
   "scanner-runtime.js",
+  "scanner-storage.js",
   "vehicle-identity.js",
   "listing-details-extractor.js",
   "payload-normalizer.js",

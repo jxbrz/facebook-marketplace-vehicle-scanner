@@ -74,7 +74,8 @@
 }
 
 .mcf-panel-limit,
-.mcf-panel-sync {
+.mcf-panel-sync,
+.mcf-panel-storage {
   margin-top: 10px;
   color: #b0b3b8;
 }
@@ -82,6 +83,11 @@
 .mcf-panel-sync {
   min-height: 16px;
   color: #d8dadf;
+}
+
+.mcf-panel-storage {
+  margin-top: 8px;
+  color: #ffd27d;
 }
 
 .mcf-panel-progress-track {

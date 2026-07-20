@@ -1,7 +1,6 @@
-const EXTENSION_VERSION = "23.0.5";
+const EXTENSION_VERSION = "23.0.6";
 
 const CONFIG = {
-  cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
   maxListingsPerDomPass: 160,
   maxQueuedInspections: 12,
   listingProcessingConcurrency: 3,
@@ -13,6 +12,7 @@ const CONFIG = {
   uploadMaxRetries: 3,
   progressSyncDelayMs: 1800,
   persistDelayMs: 700,
+  runtimeProgressPersistDelayMs: 250,
   scanDebounceMs: 160,
   autoLoadPauseMs: 900,
   autoLoadStepRatio: 0.72,
@@ -82,12 +82,14 @@ let scanTimer = null;
 let persistTimer = null;
 let uploadTimer = null;
 let progressTimer = null;
+let runtimeProgressTimer = null;
 let deadlineTimer = null;
 let elapsedTimer = null;
 let observerTimer = null;
 let scrollTimer = null;
 let uploadInFlight = false;
 let uploadRetryCount = 0;
+let lastUploadAttemptAt = null;
 let progressSyncInFlight = false;
 let completionInFlight = false;
 let latestRuntimeProgress = null;
@@ -95,6 +97,15 @@ let panelElements = null;
 let observerConnected = false;
 let lifecycleDiagnostics = [];
 let performanceDiagnostics = ScannerDiagnostics.create();
+let storageHealth = {
+  estimatedBytes: 0,
+  softLimitBytes: ScannerStorage.SOFT_LIMIT_BYTES,
+  pruneCount: 0,
+  lastQuotaFailure: null,
+  persistenceDegraded: false,
+  nearSoftLimit: false
+};
+let storageFixedBytes = 0;
 let processingQueue = null;
 let domMutationVersion = 0;
 let debugSummaryLastLoggedAt = 0;
@@ -722,7 +733,8 @@ function getRuntimeProgress() {
     updatedAt: Date.now(),
     invariantValid: counts.invariantValid,
     lifecycleDiagnostics,
-    performanceDiagnostics: performanceDiagnostics.snapshot()
+    performanceDiagnostics: performanceDiagnostics.snapshot(),
+    storageHealth: { ...storageHealth }
   };
 }
 
@@ -732,7 +744,15 @@ function updateProgress() {
   renderPanel(progress);
   maybeLogPerformanceSummary(progress);
 
-  chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress }).catch(() => {});
+  clearTimeout(runtimeProgressTimer);
+  runtimeProgressTimer = setTimeout(() => {
+    chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress }).catch(error => {
+      if (ScannerStorage.isQuotaError(error)) {
+        storageHealth.lastQuotaFailure = new Date().toISOString();
+        storageHealth.nearSoftLimit = true;
+      }
+    });
+  }, CONFIG.runtimeProgressPersistDelayMs);
 }
 
 function getTerminalCondition() {
@@ -833,43 +853,19 @@ function collectScannableEntries() {
 }
 
 async function loadCachedResults(listingIds) {
-  const keys = listingIds.map(id => `listing:${id}`);
-  if (!keys.length) return new Map();
-
-  const stored = await chrome.storage.local.get(keys);
-  const now = Date.now();
   const results = new Map();
-  const expired = [];
-
   for (const listingId of listingIds) {
-    const key = `listing:${listingId}`;
-    const cached = stored[key];
-
-    if (!cached || now - cached.savedAt > CONFIG.cacheTtlMs) {
-      if (cached) expired.push(key);
-      continue;
+    if (resultByListingId.has(listingId)) {
+      results.set(listingId, resultByListingId.get(listingId));
     }
-
-    results.set(listingId, cached.result);
-    resultByListingId.set(listingId, cached.result);
   }
-
-  if (expired.length) {
-    chrome.storage.local.remove(expired);
-  }
-
   return results;
 }
 
 async function saveCachedResult(listingId, result) {
+  // Full detail results are intentionally memory-only. The compact active-run
+  // state persists the upload payload only until the dashboard confirms it.
   resultByListingId.set(listingId, result);
-
-  await chrome.storage.local.set({
-    [`listing:${listingId}`]: {
-      savedAt: Date.now(),
-      result
-    }
-  });
 }
 
 function sendBackground(message) {
@@ -1056,7 +1052,7 @@ function queueRemoteListing(entry, result = null) {
 
   pendingUploadsByListingId.set(
     entry.listingId,
-    buildRemoteListing(entry, result)
+    ScannerStorage.sanitisePendingUpload(buildRemoteListing(entry, result))
   );
 
   if (uploadRetryCount >= CONFIG.uploadMaxRetries) {
@@ -1067,6 +1063,37 @@ function queueRemoteListing(entry, result = null) {
     remoteSyncError = null;
   }
   scheduleUpload();
+}
+
+async function pruneUploadedListings(listingIds) {
+  const uploadedAt = Date.now();
+  for (const listingId of listingIds) {
+    resultByListingId.delete(listingId);
+    const entry = ledgerByListingId.get(listingId);
+    if (entry) {
+      ledgerByListingId.set(listingId, {
+        listingId,
+        status: entry.status,
+        workState: "processed",
+        reason: entry.reason || null,
+        code: entry.code || null,
+        source: entry.source || "dashboard-upload",
+        discoveredAt: entry.discoveredAt || null,
+        processedAt: entry.processedAt || uploadedAt,
+        uploadedAt
+      });
+    }
+  }
+
+  // Remove only obsolete extension-owned full-result caches. Settings,
+  // credentials, and pending failures are deliberately outside this list.
+  if (listingIds.length) {
+    await chrome.storage.local.remove(listingIds.map(id => `listing:${id}`)).catch(error => {
+      console.warn("Marketplace Vehicle Scanner could not remove a legacy completed cache entry:", {
+        quotaRelated: ScannerStorage.isQuotaError(error)
+      });
+    });
+  }
 }
 
 function scheduleUpload(delay = CONFIG.uploadDelayMs, retry = false) {
@@ -1108,6 +1135,7 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
       if (!batchEntries.length) break;
 
       const uploadStartedAt = Date.now();
+      lastUploadAttemptAt = uploadStartedAt;
       try {
         await sendBackground({
           type: "REMOTE_UPLOAD_LISTINGS",
@@ -1135,9 +1163,13 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
         throw error;
       }
 
+      const uploadedListingIds = [];
       for (const [listingId] of batchEntries) {
         pendingUploadsByListingId.delete(listingId);
+        uploadedListingIds.push(listingId);
       }
+
+      await pruneUploadedListings(uploadedListingIds);
 
       schedulePersist();
 
@@ -1167,6 +1199,7 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
     remoteSyncState = "error";
     remoteSyncError = error instanceof Error ? error.message : String(error);
     updateProgress();
+    schedulePersist();
 
     if (force) {
       throw error;
@@ -1901,26 +1934,6 @@ async function finaliseScan(status, reason) {
   return true;
 }
 
-function rebuildPendingUploadsFromLedger() {
-  const rebuilt = new Map();
-
-  for (const [listingId, entry] of ledgerByListingId.entries()) {
-    if (!isFinalStatus(entry.status)) {
-      continue;
-    }
-
-    rebuilt.set(
-      listingId,
-      buildRemoteListing(
-        entry,
-        resultByListingId.get(listingId) || null
-      )
-    );
-  }
-
-  pendingUploadsByListingId = rebuilt;
-}
-
 function isMissingRemoteScanError(error) {
   const message =
     error instanceof Error
@@ -1931,6 +1944,17 @@ function isMissingRemoteScanError(error) {
 }
 
 async function recreateMissingRemoteScan() {
+  const hasPrunedUploads = [...ledgerByListingId.entries()].some(([listingId, entry]) =>
+    isFinalStatus(entry.status) &&
+    entry.uploadedAt &&
+    !pendingUploadsByListingId.has(listingId)
+  );
+  if (hasPrunedUploads) {
+    throw new Error(
+      "The hosted scan is missing after confirmed uploads were pruned locally. Start a new scan to avoid incomplete results."
+    );
+  }
+
   remoteSyncState = "syncing";
   remoteSyncError = null;
   updateProgress();
@@ -1943,8 +1967,6 @@ async function recreateMissingRemoteScan() {
   remoteRun = replacementRun;
   remoteCompleted = false;
   resultsOpenedForScanId = null;
-
-  rebuildPendingUploadsFromLedger();
 
   remoteSyncState = pendingUploadsByListingId.size
     ? "pending"
@@ -1966,10 +1988,7 @@ async function retryRemoteSync(options = {}) {
   remoteSyncError = null;
   remoteSyncState = "syncing";
   uploadRetryCount = 0;
-
-  // Always rebuild payloads from the durable ledger so fixes to payload
-  // normalisation apply to previously saved scans.
-  rebuildPendingUploadsFromLedger();
+  lastUploadAttemptAt = null;
 
   updateProgress();
   schedulePersist(0);
@@ -2069,6 +2088,7 @@ function resetRunMemory() {
   pendingUploadsByListingId = new Map();
   uploadInFlight = false;
   uploadRetryCount = 0;
+  lastUploadAttemptAt = null;
   progressSyncInFlight = false;
   completionInFlight = false;
   processingQueue = createProcessingQueue();
@@ -2216,6 +2236,89 @@ function serialiseMap(map) {
   return Object.fromEntries(map.entries());
 }
 
+function getActiveRunSource() {
+  return {
+    sourceSearchRouteKey,
+    settingsSnapshot: settings,
+    scanStartedAt,
+    scanCompletedAt,
+    scanDeadlineAt,
+    scanStatus,
+    lifecycleState,
+    historicalScanStatus,
+    stopReason,
+    runToken,
+    scanningActive,
+    scanFinalised,
+    remoteRun,
+    remoteCompleted,
+    remoteSyncState,
+    remoteSyncError,
+    uploadRetryCount,
+    lastUploadAttemptAt,
+    resultsOpenedForScanId,
+    ledger: serialiseMap(ledgerByListingId),
+    pendingUploads: serialiseMap(pendingUploadsByListingId),
+    lifecycleDiagnostics,
+    filterFingerprint: getFilterFingerprint()
+  };
+}
+
+function buildPersistedActiveRun() {
+  let state = ScannerStorage.buildCompactState(getActiveRunSource(), { ...storageHealth });
+  const estimatedBytes = storageFixedBytes + ScannerStorage.approximateStorageItemBytes(
+    CONFIG.activeRunStorageKey,
+    state
+  );
+  storageHealth.estimatedBytes = estimatedBytes;
+  storageHealth.nearSoftLimit = estimatedBytes >= storageHealth.softLimitBytes * 0.8;
+  state.storageHealth = { ...storageHealth };
+  return state;
+}
+
+async function removeStorageKeysInChunks(keys, chunkSize = 100) {
+  for (let index = 0; index < keys.length; index += chunkSize) {
+    await chrome.storage.local.remove(keys.slice(index, index + chunkSize));
+  }
+}
+
+async function pruneObsoleteStorage() {
+  const allData = await chrome.storage.local.get(null);
+  const keysToRemove = Object.keys(allData).filter(key =>
+    key.startsWith("listing:") ||
+    key.startsWith("searchSession:") ||
+    key === "lastActiveSearchRouteKey" ||
+    key === "activeSearchSession"
+  );
+  if (keysToRemove.length) await removeStorageKeysInChunks(keysToRemove);
+  storageHealth.pruneCount += keysToRemove.length;
+  return keysToRemove.length;
+}
+
+function enterPersistenceDegradedMode() {
+  storageHealth.persistenceDegraded = true;
+  storageHealth.nearSoftLimit = true;
+  if (scanIsRunning()) {
+    lifecycleState = ScannerLifecycle.transition(lifecycleState, "PAUSE");
+    scanStatus = "paused";
+    stopReason = "storage_quota";
+    stopScanningActivity("storage_quota");
+    recordLifecycleDiagnostic("storage_persistence_degraded");
+  }
+  renderPanel(getRuntimeProgress());
+}
+
+function pauseAtStorageSoftLimit() {
+  if (!scanIsRunning()) return;
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "PAUSE");
+  scanStatus = "paused";
+  stopReason = "storage_soft_limit";
+  stopScanningActivity("storage_soft_limit");
+  recordLifecycleDiagnostic("storage_soft_limit_pause");
+  updateProgress();
+  schedulePersist(0);
+}
+
 function schedulePersist(delay = CONFIG.persistDelayMs) {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
@@ -2231,41 +2334,84 @@ async function persistActiveRun() {
     return;
   }
 
-  await chrome.storage.local.set({
-    [CONFIG.activeRunStorageKey]: {
-      version: 19,
-      sourceSearchRouteKey,
-      settingsSnapshot: settings,
-      scanStartedAt,
-      scanCompletedAt,
-      scanDeadlineAt,
-      scanStatus,
-      lifecycleState,
-      historicalScanStatus,
-      stopReason,
-      runToken,
-      scanningActive,
-      scanFinalised,
-      remoteRun,
-      remoteCompleted,
-      remoteSyncState,
-      remoteSyncError,
-      resultsOpenedForScanId,
-      ledger: serialiseMap(ledgerByListingId),
-      results: serialiseMap(resultByListingId),
-      pendingUploads: serialiseMap(pendingUploadsByListingId),
-      lifecycleDiagnostics,
-      filterFingerprint: getFilterFingerprint(),
-      savedAt: Date.now()
+  const outcome = await ScannerStorage.writeWithQuotaRecovery({
+    buildValue: buildPersistedActiveRun,
+    write: value => chrome.storage.local.set({ [CONFIG.activeRunStorageKey]: value }),
+    prune: pruneObsoleteStorage,
+    onQuota: () => {
+      storageHealth.lastQuotaFailure = new Date().toISOString();
+      storageHealth.nearSoftLimit = true;
+      console.warn("Marketplace Vehicle Scanner recovery storage reached its quota; pruning completed data.");
+    },
+    onDegraded: () => {
+      storageHealth.lastQuotaFailure = new Date().toISOString();
+      enterPersistenceDegradedMode();
+      console.warn("Marketplace Vehicle Scanner paused because compact recovery state could not be saved.");
     }
   });
+
+  if (outcome.ok) {
+    storageHealth.persistenceDegraded = false;
+    if (storageHealth.estimatedBytes >= storageHealth.softLimitBytes) {
+      pauseAtStorageSoftLimit();
+    }
+  }
+  return outcome.ok;
+}
+
+async function migrateExistingStorage() {
+  const allData = await chrome.storage.local.get(null);
+  const before = ScannerStorage.measureStorageData(allData);
+  const plan = ScannerStorage.migrationPlan(allData, CONFIG.activeRunStorageKey);
+
+  storageFixedBytes = Object.entries(allData)
+    .filter(([key]) => key !== CONFIG.activeRunStorageKey && !key.startsWith("listing:"))
+    .reduce((total, [key, value]) =>
+      total + ScannerStorage.approximateStorageItemBytes(key, value), 0);
+  storageHealth.estimatedBytes = before.totalBytes;
+  storageHealth.nearSoftLimit = before.totalBytes >= storageHealth.softLimitBytes * 0.8;
+
+  if (!plan.changed) return { changed: false, before, after: before };
+
+  if (plan.keysToRemove.length) {
+    await removeStorageKeysInChunks(plan.keysToRemove);
+    storageHealth.pruneCount += plan.keysToRemove.length;
+  }
+  if (plan.migratedState) {
+    plan.migratedState.storageHealth = { ...storageHealth };
+    await ScannerStorage.writeWithQuotaRecovery({
+      buildValue: () => plan.migratedState,
+      write: value => chrome.storage.local.set({ [CONFIG.activeRunStorageKey]: value }),
+      prune: pruneObsoleteStorage,
+      onQuota: () => {
+        storageHealth.lastQuotaFailure = new Date().toISOString();
+      },
+      onDegraded: () => {
+        storageHealth.lastQuotaFailure = new Date().toISOString();
+        storageHealth.persistenceDegraded = true;
+      }
+    });
+  }
+
+  const afterData = await chrome.storage.local.get(null);
+  const after = ScannerStorage.measureStorageData(afterData);
+  storageHealth.estimatedBytes = after.totalBytes;
+  storageHealth.nearSoftLimit = after.totalBytes >= storageHealth.softLimitBytes * 0.8;
+  console.info("Marketplace Vehicle Scanner storage migration:", {
+    schemaVersion: ScannerStorage.SCHEMA_VERSION,
+    beforeBytes: before.totalBytes,
+    afterBytes: after.totalBytes,
+    removedLegacyCaches: plan.removedLegacyCaches,
+    removedObsoleteKeys: plan.keysToRemove.length - plan.removedLegacyCaches
+  });
+  return { changed: true, before, after };
 }
 
 async function restoreActiveRun() {
   const stored = await chrome.storage.local.get(CONFIG.activeRunStorageKey);
   const state = stored[CONFIG.activeRunStorageKey];
 
-  if (!state || state.version !== 19 || !state.remoteRun?.scanId) {
+  if (!state || ![19, ScannerStorage.SCHEMA_VERSION].includes(state.version) || !state.remoteRun?.scanId) {
     lifecycleState = "idle";
     scanningActive = false;
     recordLifecycleDiagnostic("startup_idle", { persisted: false });
@@ -2297,10 +2443,19 @@ async function restoreActiveRun() {
   remoteCompleted = Boolean(state.remoteCompleted);
   remoteSyncState = state.remoteSyncState || "idle";
   remoteSyncError = state.remoteSyncError || null;
+  uploadRetryCount = Math.max(0, Math.min(CONFIG.uploadMaxRetries, Number(state.uploadRetryCount) || 0));
+  lastUploadAttemptAt = Number(state.lastUploadAttemptAt) || null;
   resultsOpenedForScanId = state.resultsOpenedForScanId || null;
   ledgerByListingId = new Map(Object.entries(state.ledger || {}));
-  resultByListingId = new Map(Object.entries(state.results || {}));
-  pendingUploadsByListingId = new Map(Object.entries(state.pendingUploads || {}));
+  resultByListingId = new Map();
+  pendingUploadsByListingId = new Map(Object.entries(
+    ScannerStorage.compactPendingUploads(state.pendingUploads)
+  ));
+  storageHealth = {
+    ...(state.storageHealth || {}),
+    ...storageHealth,
+    softLimitBytes: ScannerStorage.SOFT_LIMIT_BYTES
+  };
   lifecycleDiagnostics = Array.isArray(state.lifecycleDiagnostics)
     ? state.lifecycleDiagnostics.slice(-30)
     : [];
@@ -2372,6 +2527,7 @@ async function clearLocalScannerState() {
   const keysToRemove = Object.keys(allData).filter(key =>
     key === CONFIG.activeRunStorageKey ||
     key === "runtimeProgress" ||
+    key.startsWith("listing:") ||
     key.startsWith("searchSession:") ||
     key === "lastActiveSearchRouteKey" ||
     key === "activeSearchSession"
@@ -2467,6 +2623,10 @@ function ensurePanel() {
     const syncText = document.createElement("div");
     syncText.className = "mcf-panel-sync";
 
+    const storageText = document.createElement("div");
+    storageText.className = "mcf-panel-storage";
+    storageText.hidden = true;
+
     const actions = document.createElement("div");
     actions.className = "mcf-panel-actions";
 
@@ -2501,7 +2661,7 @@ function ensurePanel() {
     });
 
     actions.append(stopButton, resultsButton, retryButton);
-    root.append(header, counters, limitText, progressTrack, syncText, actions);
+    root.append(header, counters, limitText, progressTrack, syncText, storageText, actions);
     document.documentElement.appendChild(root);
 
     panelElements = {
@@ -2514,6 +2674,7 @@ function ensurePanel() {
       limitText,
       progressBar,
       syncText,
+      storageText,
       stopButton,
       resultsButton,
       retryButton
@@ -2570,6 +2731,11 @@ function renderPanel(progress) {
       : progress.remoteCompleted
         ? "Dashboard is up to date."
         : "Connected to dashboard.";
+
+  panel.storageText.hidden = !progress.storageHealth?.nearSoftLimit;
+  panel.storageText.textContent = progress.storageHealth?.persistenceDegraded
+    ? "Scan paused: local resume protection is temporarily unavailable."
+    : "Scanner local recovery storage is nearly full. Uploaded results are being cleaned automatically.";
 
   panel.stopButton.hidden = !progress.scanningActive;
   panel.resultsButton.disabled = !progress.resultsUrl;
@@ -2674,9 +2840,31 @@ async function initialiseScanner() {
   });
 
   cleanupLegacyCardDecorations();
-  const restored = await loadSettings().then(restoreActiveRun);
+  await loadSettings();
+  await migrateExistingStorage();
+  const restored = await restoreActiveRun();
   if (!restored) updateProgress();
 }
+
+globalThis.measureKelmarScannerStorage = async function measureKelmarScannerStorage() {
+  const report = ScannerStorage.measureStorageData(await chrome.storage.local.get(null));
+  console.table(report.rows);
+  console.table(report.largestCollections);
+  console.info("Marketplace Vehicle Scanner storage totals:", {
+    totalBytes: report.totalBytes,
+    softLimitBytes: report.softLimitBytes,
+    averageListingBytes: report.averageListingBytes,
+    maximumListingBytes: report.maximumListingBytes,
+    duplicateListingIds: report.duplicateListingIds,
+    imageUrlCount: report.imageUrlCount,
+    imageUrlBytes: report.imageUrlBytes,
+    descriptionBytes: report.descriptionBytes,
+    diagnosticsBytes: report.diagnosticsBytes,
+    completedWorkBytes: report.completedWorkBytes,
+    pendingUploadBytes: report.pendingUploadBytes
+  });
+  return report;
+};
 
 initialiseScanner().catch(error => {
   console.error("Marketplace Vehicle Scanner initialisation failed:", error);

@@ -51,7 +51,7 @@ Expected flow:
 10. A listing containing `S category` is rejected as category S.
 11. A listing containing only `Not Cat S` is not rejected for category disclosure.
 12. Reloading the extension preserves configuration and compatible active state.
-13. With a deliberately removed test scan, retry recreates the remote scan and replays the durable ledger.
+13. With a deliberately removed test scan before any confirmed upload, retry recreates the remote scan and replays retained pending payloads. After a confirmed payload has been pruned, verify replacement is refused rather than producing an incomplete scan.
 14. Contacting the seller still happens only on the original Facebook listing.
 15. During an incomplete static-detail fetch, confirm any inactive item tab closes after extraction and does not stop or reset the scan.
 16. Reload with an active scan and verify **Interrupted scan found** appears without discovery; test Resume and Discard separately.

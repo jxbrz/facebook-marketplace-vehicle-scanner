@@ -13,6 +13,7 @@ The hosted Next.js application authenticates extension requests, validates struc
 - `background.js`: bounded Facebook fetch and rendered-tab queues with timeout/cleanup, and authenticated dashboard request boundary.
 - `scanner-runtime.js`: pure canonical-ID, recycled-card, scroll-target, end-detection, and bounded-queue primitives.
 - `scanner-diagnostics.js`: opt-in bounded timing aggregation for development diagnosis.
+- `scanner-storage.js`: compact schema migration, UTF-8 measurement, payload/image sanitation, and quota recovery primitives.
 - `listing-details-extractor.js`: bounded listing-ID/canonical-URL embedded traversal, semantic rendered-section extraction, and reusable media ranking. `og:image` is the final image fallback.
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
 - `listing-category-pipeline.js`: final trusted-evidence aggregation, provisional/final diagnostics, and final outcome counters.
@@ -30,22 +31,22 @@ Compatibility-sensitive local keys include:
 
 - `scannerV19:activeRun`;
 - `runtimeProgress`;
-- `listing:<facebook-listing-id>` cache entries;
+- legacy `listing:<facebook-listing-id>` cache entries, removed by schema-20 migration;
 - dashboard URL, API token, scan limit, filter, and category setting keys.
 
 The background worker is the single authenticated API boundary. It maps only the exact legacy Vercel production origin to `https://sourcing.kelmarvehiclesltd.co.uk`, persists that migration, constructs every `/api/extension/scans...` request from the canonical value, and rejects redirects. Popup initialization applies the same storage migration so the displayed configuration matches the runtime boundary.
 
-The active-run state's internal `version` remains `19`. Code release versions are independent of that persisted schema number.
+The active-run state's internal `version` is `20`; the established key name remains unchanged for in-place migration compatibility. Code release versions are independent of that persisted schema number.
 
 ## Phase 1 review data
 
-The extension stores structured extraction results in the existing bounded cached result and durable ledger flow. Restored outcomes are rebuilt through the current payload normalizer, so missing v23 fields become null/empty values without requiring local-state clearing. Gallery order follows Facebook's listing-photo order; duplicates and malformed URLs are removed and the existing card image remains the compatible primary fallback.
+Detailed extraction results are memory-only. A single sanitised upload payload is persisted only while dashboard confirmation is pending; after confirmation, descriptions and gallery URLs are removed and a compact completed-ID marker remains. Gallery order follows Facebook's listing-photo order, exact duplicates and malformed/non-HTTPS URLs are removed, and the existing card image remains the compatible primary fallback.
 
 Facebook CDN URLs are references, not archived assets, and may expire. The server never fetches them. Seller extraction is limited to the display name and Facebook profile URL present on the listing object; the extension never opens or traverses a seller profile. When a named listing object is unavailable or does not match the requested listing ID, uncertain detail fields are omitted.
 
 Static service-worker fetches can contain only Facebook's initial HTML and omit Relay-hydrated detail. The background worker creates at most two inactive blank tabs with a conservative start gap, marks each as controlled before navigating it to the item, waits for the existing authenticated page to render, requests only the semantic listing snapshot, and closes each tab in all outcomes. This prevents one slow rendered listing from blocking every worker while retaining final seller-description/category evidence. The scanner content script checks the tab marker and skips initialization only there; ordinary visible item navigation retains the existing stop/recovery behavior. Permissions, storage keys, and the visible search tab are unchanged.
 
-Discovery/scrolling and detail processing are separate coordinated loops. Visible and recycled-card identities enter a canonical-ID ledger, cached outcomes and cheap card filters run first, and only plausible candidates enter a 3-worker/12-committed-item queue. Auto-scroll re-detects the closest card-bearing scroll target on every attempt and never waits for that queue to drain. Uploads remain an independent single-flight, ID-keyed batch flow.
+Discovery/scrolling and detail processing are separate coordinated loops. Visible and recycled-card identities enter a canonical-ID ledger, in-memory outcomes and cheap card filters run first, and only plausible candidates enter a 3-worker/12-committed-item queue. Auto-scroll re-detects the closest card-bearing scroll target on every attempt and never waits for that queue to drain. Uploads remain an independent single-flight, ID-keyed batch flow.
 
 ## Stopping invariants
 

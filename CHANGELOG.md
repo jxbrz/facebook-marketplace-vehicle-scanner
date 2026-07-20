@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased (recommended 23.0.6)
+## Unreleased (recommended 23.0.7)
+
+- Migrated recovery state to compact schema 20 while retaining the established `scannerV19:activeRun` key and preserving pending failed uploads, settings, and authentication.
+- Removed full successful results, descriptions, and gallery arrays immediately after confirmed dashboard upload; retired unbounded 30-day per-listing caches.
+- Added redacted UTF-8 storage measurement, bounded completed markers, safe quota prune/retry/degraded handling, storage-health UI, and migration/quota/image regression coverage.
 
 - Separated continuous discovery/auto-scroll from bounded detail processing so slow rendered listings and dashboard uploads cannot hold the page stationary.
 - Added canonical-ID lifecycle queueing, one bounded transient retry, recycled-DOM recovery, closer scroll-target selection, mutation/height growth detection, and repeated end-of-results confirmation.

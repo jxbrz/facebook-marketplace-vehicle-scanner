@@ -115,13 +115,14 @@ test("cheap filters and cached results run before bounded detail queueing", () =
 });
 
 test("progressive uploads are ID-deduplicated, bounded, and independent of discovery", () => {
-  const queueUpload = functionSource("queueRemoteListing", "function scheduleUpload");
+  const queueUpload = functionSource("queueRemoteListing", "async function pruneUploadedListings");
   assert.match(queueUpload, /pendingUploadsByListingId\.set/);
   assert.match(queueUpload, /scheduleUpload\(\)/);
   assert.doesNotMatch(queueUpload, /await|scanPage/);
 
   const flush = functionSource("flushPendingUploads", "function scheduleRemoteProgressSync");
   assert.match(flush, /slice\(0, CONFIG\.uploadBatchSize\)/);
+  assert.match(flush, /pruneUploadedListings\(uploadedListingIds\)/);
   assert.match(flush, /reserveUploadRetry\(\)/);
   assert.match(source, /uploadMaxRetries: 3/);
   const retry = functionSource("reserveUploadRetry", "async function flushPendingUploads");
@@ -129,6 +130,41 @@ test("progressive uploads are ID-deduplicated, bounded, and independent of disco
 
   const scan = functionSource("scanPage", "function scheduleScan");
   assert.doesNotMatch(scan, /flushPendingUploads|REMOTE_UPLOAD_LISTINGS/);
+});
+
+test("persisted recovery state contains no successful full-result copy", () => {
+  const persistence = functionSource("getActiveRunSource", "function buildPersistedActiveRun");
+  assert.match(persistence, /pendingUploads: serialiseMap\(pendingUploadsByListingId\)/);
+  assert.doesNotMatch(persistence, /results:|resultByListingId/);
+
+  const pruning = functionSource("pruneUploadedListings", "function scheduleUpload");
+  assert.match(pruning, /resultByListingId\.delete\(listingId\)/);
+  assert.match(pruning, /pending failures are deliberately outside this list/);
+
+  const retry = functionSource("retryRemoteSync", "async function openResults");
+  assert.doesNotMatch(retry, /rebuildPendingUploadsFromLedger/);
+  assert.doesNotMatch(source, /function rebuildPendingUploadsFromLedger/);
+});
+
+test("legacy full-result caches are migration-only and new details remain memory-only", () => {
+  const save = functionSource("saveCachedResult", "function sendBackground");
+  assert.match(save, /resultByListingId\.set/);
+  assert.doesNotMatch(save, /storage\.local\.set/);
+
+  const migration = functionSource("migrateExistingStorage", "async function restoreActiveRun");
+  assert.match(migration, /ScannerStorage\.migrationPlan/);
+  assert.match(source, /key\.startsWith\("listing:"\)/);
+});
+
+test("storage pressure pauses only after compact pending state is saved", () => {
+  const persist = functionSource("persistActiveRun", "async function migrateExistingStorage");
+  assert.ok(persist.indexOf("writeWithQuotaRecovery") < persist.indexOf("pauseAtStorageSoftLimit"));
+  assert.match(persist, /estimatedBytes >= storageHealth\.softLimitBytes/);
+
+  const pause = functionSource("pauseAtStorageSoftLimit", "function schedulePersist");
+  assert.match(pause, /transition\(lifecycleState, "PAUSE"\)/);
+  assert.match(pause, /stopScanningActivity\("storage_soft_limit"\)/);
+  assert.match(pause, /schedulePersist\(0\)/);
 });
 
 test("listing ledger persists every explicit processing lifecycle state", () => {

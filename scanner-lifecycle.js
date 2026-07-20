@@ -14,7 +14,7 @@
   ]);
 
   function classifyPersistedRun(state) {
-    if (!state || state.version !== 19 || !state.remoteRun?.scanId) {
+    if (!state || ![19, 20].includes(state.version) || !state.remoteRun?.scanId) {
       return { lifecycleState: "idle", historicalStatus: null, allowSyncRecovery: false };
     }
 

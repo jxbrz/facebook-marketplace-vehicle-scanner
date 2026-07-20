@@ -14,6 +14,7 @@ const EXPECTED_FILES = [
   "scanner-lifecycle.js",
   "scanner-diagnostics.js",
   "scanner-runtime.js",
+  "scanner-storage.js",
   "vehicle-identity.js",
   "listing-details-extractor.js",
   "payload-normalizer.js",
@@ -58,7 +59,13 @@ function auditRuntimeFiles(root = process.cwd()) {
   }
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, "23.0.5");
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.equal(manifest.version, packageJson.version, "Manifest and package versions differ");
+  assert.match(
+    fs.readFileSync(path.join(root, "content.js"), "utf8"),
+    new RegExp(`const EXTENSION_VERSION = ["']${manifest.version.replaceAll(".", "\\.")}["']`),
+    "Content-script version differs from the manifest"
+  );
   assert.equal(manifest.host_permissions.some((permission) => permission.includes("*://*/*") || permission === "https://*/*"), false);
   assert.deepEqual(Object.values(manifest.icons).sort(), EXPECTED_FILES.filter((file) => file.startsWith("icons/")).sort());
 }
