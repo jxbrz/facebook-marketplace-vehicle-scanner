@@ -85,3 +85,19 @@ test("only explicit Start or Resume enters running and terminal events leave it"
     assert.equal(permitsScanningActivity(state), false);
   }
 });
+
+test("Pause is non-terminal, persists safely, and requires explicit Resume", () => {
+  assert.equal(transition("running", "PAUSE"), "paused");
+  assert.equal(permitsScanningActivity("paused"), false);
+  assert.equal(transition("paused", "RESUME"), "running");
+  assert.equal(transition("paused", "STOP"), "stopping");
+
+  const startup = classifyPersistedRun(persisted({
+    scanStatus: "paused",
+    lifecycleState: "paused",
+    scanningActive: false,
+    scanFinalised: false
+  }));
+  assert.equal(startup.lifecycleState, "paused");
+  assert.equal(startup.allowSyncRecovery, false);
+});

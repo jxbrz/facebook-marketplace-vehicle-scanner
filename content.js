@@ -4,9 +4,13 @@ const CONFIG = {
   cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
   maxListingsPerDomPass: 160,
   maxQueuedInspections: 12,
+  listingProcessingConcurrency: 3,
+  detailMaxRetries: 1,
+  detailRetryDelayMs: 1200,
   uploadBatchSize: 10,
   uploadDelayMs: 1200,
   uploadRetryMs: 5000,
+  uploadMaxRetries: 3,
   progressSyncDelayMs: 1800,
   persistDelayMs: 700,
   scanDebounceMs: 160,
@@ -14,8 +18,6 @@ const CONFIG = {
   autoLoadStepRatio: 0.72,
   autoLoadMaxStalls: 10,
   autoLoadEndConfirmations: 4,
-  activeWorkTimeoutMs: 45000,
-  activeWorkPollMs: 250,
   growthTimeoutMs: 3500,
   activeRunStorageKey: "scannerV19:activeRun"
 };
@@ -36,7 +38,8 @@ const DEFAULT_SETTINGS = {
   excludeCategories: ["S", "N", "C", "D"],
   excludedKeywords: [],
   acceptedMakes: [],
-  acceptedModels: []
+  acceptedModels: [],
+  scannerDebugDiagnostics: false
 };
 
 const FINAL_LISTING_STATUSES = new Set([
@@ -52,6 +55,7 @@ let scanGeneration = 0;
 let scanningActive = false;
 let autoLoadingActive = false;
 let autoLoadStopRequested = true;
+let scrollState = "idle";
 let finalising = false;
 let scanFinalised = false;
 let scanStartedAt = null;
@@ -83,13 +87,40 @@ let elapsedTimer = null;
 let observerTimer = null;
 let scrollTimer = null;
 let uploadInFlight = false;
+let uploadRetryCount = 0;
 let progressSyncInFlight = false;
 let completionInFlight = false;
 let latestRuntimeProgress = null;
 let panelElements = null;
 let observerConnected = false;
 let lifecycleDiagnostics = [];
+let performanceDiagnostics = ScannerDiagnostics.create();
+let processingQueue = null;
+let domMutationVersion = 0;
+let debugSummaryLastLoggedAt = 0;
 const scanDelayWaits = new Set();
+
+function resetPerformanceDiagnostics() {
+  performanceDiagnostics = ScannerDiagnostics.create({
+    enabled: settings.scannerDebugDiagnostics === true,
+    maxListings: 520,
+    maxScrolls: 100
+  });
+  debugSummaryLastLoggedAt = 0;
+}
+
+function maybeLogPerformanceSummary(progress) {
+  if (!performanceDiagnostics.enabled) return;
+  const now = Date.now();
+  if (now - debugSummaryLastLoggedAt < 10000) return;
+  debugSummaryLastLoggedAt = now;
+  console.info("Marketplace Vehicle Scanner timing summary:", {
+    processed: progress.processed,
+    queued: progress.queued,
+    activeWorkers: progress.scanning,
+    ...progress.performanceDiagnostics
+  });
+}
 
 function recordLifecycleDiagnostic(event, details = {}) {
   const entry = {
@@ -181,23 +212,7 @@ function deriveScanName() {
 }
 
 function normaliseListingUrl(href) {
-  try {
-    const url = new URL(href, location.origin);
-    let match = url.pathname.match(/\/marketplace\/item\/(\d+)/);
-
-    if (!match) {
-      match = url.pathname.match(/\/item\/(\d+)/);
-    }
-
-    if (!match) return null;
-
-    return {
-      id: match[1],
-      url: `${url.origin}/marketplace/item/${match[1]}/`
-    };
-  } catch {
-    return null;
-  }
+  return ScannerRuntime.normaliseListingUrl(href, location.origin);
 }
 
 function getUniqueListingIds(element) {
@@ -530,6 +545,7 @@ function upsertLedgerEntry(listingId, patch = {}) {
     listingId,
     url: null,
     status: "discovered",
+    workState: "unseen",
     reason: null,
     code: null,
     source: "search-card",
@@ -556,6 +572,13 @@ function upsertLedgerEntry(listingId, patch = {}) {
 function markDiscovered(listing, metadata) {
   const current = getLedgerEntry(listing.id);
 
+  if (current) {
+    performanceDiagnostics.increment("duplicateSkipped");
+  } else {
+    performanceDiagnostics.recordListing(listing.id, "discovered");
+    performanceDiagnostics.increment("discovered");
+  }
+
   return upsertLedgerEntry(listing.id, {
     url: listing.url,
     status: current?.status || "discovered",
@@ -567,6 +590,7 @@ function markDiscovered(listing, metadata) {
 function markFinal(listingId, status, options = {}) {
   const entry = upsertLedgerEntry(listingId, {
     status,
+    workState: options.workState || (status === "unavailable" ? "failed_final" : "processed"),
     reason: options.reason || (status === "matched" ? "No selected filter matched" : null),
     code: options.code || (status === "unavailable" ? "unavailable" : null),
     source: options.source || "listing-result",
@@ -575,6 +599,7 @@ function markFinal(listingId, status, options = {}) {
   });
 
   queuedListingIds.delete(listingId);
+  performanceDiagnostics.recordListing(listingId, "processingComplete");
   queueRemoteListing(entry, options.result || null);
   updateProgress();
   schedulePersist();
@@ -654,6 +679,11 @@ function getProgressPayload() {
 
 function getRuntimeProgress() {
   const counts = countStates();
+  performanceDiagnostics.setGauges({
+    queueSize: counts.queued,
+    activeWorkers: counts.scanning,
+    processed: counts.processed
+  });
 
   return {
     ...counts,
@@ -662,7 +692,10 @@ function getRuntimeProgress() {
     lifecycleState,
     historicalScanStatus,
     interrupted: lifecycleState === "interrupted",
+    paused: lifecycleState === "paused",
+    canResume: ["interrupted", "paused"].includes(lifecycleState),
     autoLoadingActive,
+    scrollState,
     targetMatches: settings.targetMatches,
     maximumProcessed: settings.maximumProcessed,
     maximumDurationSeconds: settings.maximumDurationSeconds,
@@ -688,7 +721,8 @@ function getRuntimeProgress() {
     completedAt: scanCompletedAt,
     updatedAt: Date.now(),
     invariantValid: counts.invariantValid,
-    lifecycleDiagnostics
+    lifecycleDiagnostics,
+    performanceDiagnostics: performanceDiagnostics.snapshot()
   };
 }
 
@@ -696,6 +730,7 @@ function updateProgress() {
   const progress = getRuntimeProgress();
   latestRuntimeProgress = progress;
   renderPanel(progress);
+  maybeLogPerformanceSummary(progress);
 
   chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress }).catch(() => {});
 }
@@ -758,6 +793,7 @@ function collectCards() {
     const listing = normaliseListingUrl(anchor.href);
 
     if (!listing || unique.has(listing.id)) continue;
+    performanceDiagnostics.recordListing(listing.id, "idExtracted");
 
     if (!ledgerByListingId.has(listing.id) && ledgerByListingId.size >= discoveryCeiling) {
       continue;
@@ -786,6 +822,14 @@ function collectCards() {
   return [...unique.values()]
     .sort((a, b) => b.priority - a.priority)
     .slice(0, CONFIG.maxListingsPerDomPass);
+}
+
+function collectScannableEntries() {
+  return ScannerRuntime.mergeScannableEntries(
+    collectCards(),
+    ledgerByListingId.values(),
+    CONFIG.maxListingsPerDomPass
+  );
 }
 
 async function loadCachedResults(listingIds) {
@@ -1015,12 +1059,18 @@ function queueRemoteListing(entry, result = null) {
     buildRemoteListing(entry, result)
   );
 
-  remoteSyncState = "pending";
-  remoteSyncError = null;
+  if (uploadRetryCount >= CONFIG.uploadMaxRetries) {
+    remoteSyncState = "error";
+    remoteSyncError = remoteSyncError || "Automatic upload retry limit reached. Use Retry sync.";
+  } else {
+    remoteSyncState = "pending";
+    remoteSyncError = null;
+  }
   scheduleUpload();
 }
 
-function scheduleUpload(delay = CONFIG.uploadDelayMs) {
+function scheduleUpload(delay = CONFIG.uploadDelayMs, retry = false) {
+  if (!retry && delay > 0 && uploadRetryCount >= CONFIG.uploadMaxRetries) return;
   clearTimeout(uploadTimer);
 
   uploadTimer = setTimeout(() => {
@@ -1028,6 +1078,13 @@ function scheduleUpload(delay = CONFIG.uploadDelayMs) {
       console.warn("Marketplace Vehicle Scanner upload failed:", error);
     });
   }, delay);
+}
+
+function reserveUploadRetry() {
+  if (uploadRetryCount >= CONFIG.uploadMaxRetries) return false;
+  uploadRetryCount += 1;
+  performanceDiagnostics.increment("retries");
+  return true;
 }
 
 async function flushPendingUploads(force = false, allowRecreate = true) {
@@ -1050,12 +1107,33 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
 
       if (!batchEntries.length) break;
 
-      await sendBackground({
-        type: "REMOTE_UPLOAD_LISTINGS",
-        scanId: remoteRun.scanId,
-        listings: batchEntries.map(([, listing]) => listing),
-        progress: getProgressPayload()
-      });
+      const uploadStartedAt = Date.now();
+      try {
+        await sendBackground({
+          type: "REMOTE_UPLOAD_LISTINGS",
+          scanId: remoteRun.scanId,
+          listings: batchEntries.map(([, listing]) => listing),
+          progress: getProgressPayload()
+        });
+        performanceDiagnostics.recordUpload(
+          uploadStartedAt,
+          Date.now(),
+          batchEntries.length,
+          true
+        );
+        uploadRetryCount = 0;
+      } catch (error) {
+        performanceDiagnostics.recordUpload(
+          uploadStartedAt,
+          Date.now(),
+          batchEntries.length,
+          false
+        );
+        if (/timed out/i.test(error instanceof Error ? error.message : String(error))) {
+          performanceDiagnostics.increment("timeouts");
+        }
+        throw error;
+      }
 
       for (const [listingId] of batchEntries) {
         pendingUploadsByListingId.delete(listingId);
@@ -1071,7 +1149,12 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
     updateProgress();
     return pendingUploadsByListingId.size === 0;
   } catch (error) {
-    if (!force && allowRecreate && isMissingRemoteScanError(error)) {
+    if (
+      !force &&
+      allowRecreate &&
+      isMissingRemoteScanError(error) &&
+      reserveUploadRetry()
+    ) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1089,7 +1172,12 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
       throw error;
     }
 
-    if (!scanFinalised) scheduleUpload(CONFIG.uploadRetryMs);
+    if (!scanFinalised && reserveUploadRetry()) {
+      scheduleUpload(
+        Math.min(CONFIG.uploadRetryMs * (2 ** (uploadRetryCount - 1)), 20000),
+        true
+      );
+    }
     return false;
   } finally {
     uploadInFlight = false;
@@ -1132,7 +1220,7 @@ async function syncRemoteProgress() {
       remoteSyncError = null;
     }
   } catch (error) {
-    if (isMissingRemoteScanError(error)) {
+    if (isMissingRemoteScanError(error) && reserveUploadRetry()) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1152,39 +1240,106 @@ async function syncRemoteProgress() {
   }
 }
 
+function isRetryableInspectionError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timed out|abort|failed to fetch|network|service worker did not respond|Facebook returned HTTP (?:408|425|429|500|502|503|504)\b/i.test(message);
+}
+
+function createProcessingQueue() {
+  return ScannerRuntime.createBoundedQueue({
+    concurrency: CONFIG.listingProcessingConcurrency,
+    maxRetries: CONFIG.detailMaxRetries,
+    retryDelayMs: attempt => CONFIG.detailRetryDelayMs * Math.max(1, attempt),
+    getId: item => item.entry.listing.id,
+    shouldRetry: isRetryableInspectionError,
+    worker: item => processListing(item.entry, item.generation),
+    onState(item, state, details) {
+      const { listing, metadata } = item.entry;
+      if (item.generation !== scanGeneration || !scanIsRunning()) return;
+
+      if (state === "unseen") {
+        queuedListingIds.delete(listing.id);
+        upsertLedgerEntry(listing.id, { status: "discovered", workState: "unseen" });
+      } else if (state === "queued") {
+        queuedListingIds.add(listing.id);
+        upsertLedgerEntry(listing.id, {
+          status: "queued",
+          workState: "queued",
+          url: listing.url,
+          metadata,
+          source: details.retry ? "scan-retry-queue" : "scan-queue"
+        });
+        performanceDiagnostics.recordListing(listing.id, "queued");
+        if (details.retry) performanceDiagnostics.increment("retries");
+      } else if (state === "processing") {
+        upsertLedgerEntry(listing.id, {
+          status: "scanning",
+          workState: "processing",
+          metadata,
+          source: "listing-request"
+        });
+        performanceDiagnostics.recordListing(listing.id, "processingStart");
+      } else if (state === "failed_retryable") {
+        upsertLedgerEntry(listing.id, {
+          status: "queued",
+          workState: "failed_retryable",
+          reason: details.error instanceof Error ? details.error.message : String(details.error),
+          source: "listing-retry"
+        });
+      } else if (state === "failed_final") {
+        queuedListingIds.delete(listing.id);
+        const message = details.error instanceof Error ? details.error.message : String(details.error);
+        if (/timed out|abort/i.test(message)) performanceDiagnostics.increment("timeouts");
+        markFinal(listing.id, "unavailable", {
+          reason: message,
+          code: "unavailable",
+          source: "request-failed",
+          metadata,
+          result: null,
+          workState: "failed_final"
+        });
+        scheduleScan(0);
+      } else if (state === "processed") {
+        queuedListingIds.delete(listing.id);
+        const entry = getLedgerEntry(listing.id);
+        if (entry && isFinalStatus(entry.status)) {
+          upsertLedgerEntry(listing.id, { workState: "processed" });
+        }
+        scheduleScan(0);
+      }
+
+      updateProgress();
+      schedulePersist();
+    }
+  });
+}
+
+function ensureProcessingQueue() {
+  if (!processingQueue || processingQueue.snapshot().stopped) {
+    processingQueue = createProcessingQueue();
+  }
+  return processingQueue;
+}
+
 async function processListing(entry, generation) {
   const { listing, metadata, priority } = entry;
 
   if (!scanIsRunning() || generation !== scanGeneration) return;
 
-  upsertLedgerEntry(listing.id, {
-    status: "scanning",
-    metadata,
-    url: listing.url,
-    source: "listing-request"
-  });
-  updateProgress();
-
+  performanceDiagnostics.recordListing(listing.id, "detailFetchStart");
+  let result;
   try {
-    const result = normaliseFreshFacebookUkMileage(
+    result = normaliseFreshFacebookUkMileage(
       await inspectListing(listing.url, priority)
     );
-
-    if (!scanIsRunning() || generation !== scanGeneration) return;
-
-    await saveCachedResult(listing.id, result);
-    classifyListing(listing.id, metadata, result, "facebook-listing-page");
-  } catch (error) {
-    if (!scanIsRunning() || generation !== scanGeneration) return;
-
-    markFinal(listing.id, "unavailable", {
-      reason: error instanceof Error ? error.message : String(error),
-      code: "unavailable",
-      source: "request-failed",
-      metadata,
-      result: null
-    });
+  } finally {
+    performanceDiagnostics.recordListing(listing.id, "detailFetchEnd");
   }
+
+  if (!scanIsRunning() || generation !== scanGeneration) return;
+
+  await saveCachedResult(listing.id, result);
+  classifyListing(listing.id, metadata, result, "facebook-listing-page");
 }
 
 async function scanPage() {
@@ -1198,7 +1353,7 @@ async function scanPage() {
 
   if (evaluateAndFinaliseIfNeeded()) return;
 
-  const entries = collectCards();
+  const entries = collectScannableEntries();
   if (!entries.length) return;
 
   const cacheIds = entries
@@ -1243,6 +1398,7 @@ async function scanPage() {
       false
     );
     const localEvaluation = evaluateFilters(metadata, localResult);
+    performanceDiagnostics.recordListing(listing.id, "cheapFilterComplete");
 
     if (
       localEvaluation.rejected &&
@@ -1259,16 +1415,9 @@ async function scanPage() {
       continue;
     }
 
-    queuedListingIds.add(listing.id);
-    upsertLedgerEntry(listing.id, {
-      status: "queued",
-      url: listing.url,
-      metadata,
-      source: "scan-queue"
-    });
-
-    processListing(entry, scanGeneration).catch(error => {
-      console.error("Marketplace Vehicle Scanner listing failed:", error);
+    ensureProcessingQueue().enqueue({
+      entry,
+      generation: scanGeneration
     });
   }
 
@@ -1286,30 +1435,6 @@ function scheduleScan(delay = CONFIG.scanDebounceMs) {
   }, delay);
 }
 
-function getActiveWorkCount() {
-  return countStates().activeWork;
-}
-
-async function waitForActiveWorkToSettle(timeoutMs = CONFIG.activeWorkTimeoutMs) {
-  const startedAt = Date.now();
-
-  while (scanIsRunning() && !scanFinalised && !finalising) {
-    await scanPage();
-
-    if (getActiveWorkCount() === 0) {
-      return true;
-    }
-
-    if (Date.now() - startedAt >= timeoutMs) {
-      return false;
-    }
-
-    await waitForScanDelay(CONFIG.activeWorkPollMs);
-  }
-
-  return false;
-}
-
 function isScrollableElement(element) {
   if (!element || element === document.body) return false;
   const style = getComputedStyle(element);
@@ -1325,34 +1450,36 @@ function findResultsScrollContainer() {
     .filter(card => card?.isConnected)
     .slice(0, 12);
 
-  const candidates = new Set([
-    document.scrollingElement,
-    document.documentElement,
-    document.body
-  ]);
+  const documentTarget = document.scrollingElement || document.documentElement;
+  const candidateStats = new Map();
+  const addCandidate = (element, depth) => {
+    if (!element) return;
+    const current = candidateStats.get(element) || {
+      target: element,
+      cardCount: 0,
+      totalDepth: 0,
+      range: Math.max(0, getScrollMetrics(element).max),
+      connected: element === documentTarget || element.isConnected !== false
+    };
+    current.cardCount += 1;
+    current.totalDepth += depth;
+    candidateStats.set(element, current);
+  };
+
+  for (let index = 0; index < visibleCards.length; index += 1) {
+    addCandidate(documentTarget, 50);
+  }
 
   for (const card of visibleCards) {
     let node = card.parentElement;
 
     for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
-      if (isScrollableElement(node)) candidates.add(node);
+      if (isScrollableElement(node)) addCandidate(node, depth + 1);
     }
   }
 
-  let best = document.scrollingElement || document.documentElement;
-  let bestRange = Math.max(0, best.scrollHeight - best.clientHeight);
-
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const range = Math.max(0, candidate.scrollHeight - candidate.clientHeight);
-
-    if (range > bestRange) {
-      best = candidate;
-      bestRange = range;
-    }
-  }
-
-  return best;
+  const selected = ScannerRuntime.chooseScrollCandidate([...candidateStats.values()]);
+  return selected?.target || documentTarget;
 }
 
 function getScrollMetrics(container) {
@@ -1394,28 +1521,77 @@ function setScrollTop(container, value) {
   container.scrollTo({ top: value, behavior: "auto" });
 }
 
-function waitForListingGrowth(previousCount, timeoutMs = CONFIG.growthTimeoutMs) {
+function describeScrollTarget(container) {
+  if (
+    container === document.scrollingElement ||
+    container === document.documentElement ||
+    container === document.body
+  ) {
+    return "window";
+  }
+  const tag = String(container?.tagName || "element").toLowerCase();
+  const role = container?.getAttribute?.("role");
+  return role ? `${tag}[role=${String(role).slice(0, 40)}]` : tag;
+}
+
+function waitForListingGrowth(
+  previousCount,
+  container,
+  previousHeight,
+  previousMutationVersion,
+  timeoutMs = CONFIG.growthTimeoutMs
+) {
   return new Promise(resolve => {
     const startedAt = Date.now();
 
     const check = () => {
       collectCards();
       const currentCount = ledgerByListingId.size;
+      const targetReplaced =
+        container !== document.scrollingElement &&
+        container !== document.documentElement &&
+        container !== document.body &&
+        container?.isConnected === false;
+      const currentHeight = targetReplaced
+        ? 0
+        : getScrollMetrics(container).height;
+      const grew = currentCount > previousCount || currentHeight > previousHeight;
+      const mutated = domMutationVersion > previousMutationVersion;
 
-      if (currentCount > previousCount) {
-        resolve({ grew: true, count: currentCount });
+      if (grew || mutated || targetReplaced) {
+        resolve({ grew, mutated, targetReplaced, count: currentCount, height: currentHeight });
         return;
       }
 
       if (!scanIsRunning() || Date.now() - startedAt >= timeoutMs) {
-        resolve({ grew: false, count: currentCount });
+        resolve({
+          grew: false,
+          mutated: false,
+          targetReplaced: false,
+          count: currentCount,
+          height: currentHeight
+        });
         return;
       }
 
-      waitForScanDelay(180).then(check);
+      waitForScanDelay(120).then(check);
     };
 
     check();
+  });
+}
+
+function waitForAnimationFrame(timeoutMs = 120) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(finish, timeoutMs);
+    requestAnimationFrame(finish);
   });
 }
 
@@ -1424,10 +1600,9 @@ async function autoLoadListings() {
 
   autoLoadingActive = true;
   autoLoadStopRequested = false;
+  scrollState = "discovering";
   recordLifecycleDiagnostic("auto_scroll_started");
-  let stalls = 0;
-  let endConfirmations = 0;
-  let previousDiscoveredCount = ledgerByListingId.size;
+  let endState = { stalls: 0, endConfirmations: 0, complete: false };
   updateProgress();
 
   while (
@@ -1443,30 +1618,23 @@ async function autoLoadListings() {
 
     if (evaluateAndFinaliseIfNeeded()) break;
 
-    collectCards();
+    scrollState = "discovering";
     await scanPage();
-    await waitForActiveWorkToSettle();
 
     if (!scanIsRunning() || evaluateAndFinaliseIfNeeded()) break;
 
-    // If there are still unprocessed cards in the current DOM, scan another
-    // controlled batch before moving the page.
-    const currentEntries = collectCards();
-    const hasUnprocessedVisible = currentEntries.some(entry => {
-      const status = getLedgerEntry(entry.listing.id)?.status;
-      return !isFinalStatus(status);
-    });
-
-    if (hasUnprocessedVisible) {
-      continue;
-    }
-
     const container = findResultsScrollContainer();
     const before = getScrollMetrics(container);
+    const discoveredBeforeScroll = ledgerByListingId.size;
     const step = Math.max(450, Math.round(before.client * CONFIG.autoLoadStepRatio));
     let nextTop = Math.min(before.max, before.top + step);
+    let nudgedAtBottom = false;
+    const mutationVersionBeforeScroll = domMutationVersion;
+    const scrollAttemptedAt = Date.now();
+    scrollState = "scrolling";
 
     if (before.max - before.top < 50) {
+      nudgedAtBottom = true;
       setScrollTop(
         container,
         Math.max(0, before.top - Math.round(before.client * 0.18))
@@ -1476,37 +1644,60 @@ async function autoLoadListings() {
     }
 
     setScrollTop(container, nextTop);
+    await waitForAnimationFrame();
 
+    scrollState = "waiting_for_growth";
     const growth = await waitForListingGrowth(
-      previousDiscoveredCount,
+      discoveredBeforeScroll,
+      container,
+      before.height,
+      mutationVersionBeforeScroll,
       Math.max(CONFIG.growthTimeoutMs, CONFIG.autoLoadPauseMs * 3)
     );
+    await scanPage();
 
     const after = getScrollMetrics(container);
     const atBottom = after.max - after.top < 70;
+    const moved = nudgedAtBottom || Math.abs(after.top - before.top) > 2;
+    const newCards = Math.max(0, growth.count - discoveredBeforeScroll);
+    performanceDiagnostics.recordScroll({
+      at: scrollAttemptedAt,
+      target: describeScrollTarget(container),
+      beforeTop: before.top,
+      afterTop: after.top,
+      beforeHeight: before.height,
+      afterHeight: after.height,
+      newCards
+    });
 
-    if (growth.grew) {
-      previousDiscoveredCount = growth.count;
-      stalls = 0;
-      endConfirmations = 0;
-    } else {
-      stalls += 1;
-      endConfirmations = atBottom ? endConfirmations + 1 : 0;
-    }
+    endState = ScannerRuntime.nextEndDetectionState(endState, {
+      grew: growth.grew,
+      targetReplaced: growth.targetReplaced,
+      moved,
+      atBottom
+    }, {
+      maxStalls: CONFIG.autoLoadMaxStalls,
+      endConfirmations: CONFIG.autoLoadEndConfirmations
+    });
 
-    if (
-      stalls >= CONFIG.autoLoadMaxStalls ||
-      endConfirmations >= CONFIG.autoLoadEndConfirmations
-    ) {
-      await finaliseScan("completed", "no_more_results");
-      break;
+    if (endState.complete) {
+      const counts = countStates();
+      if (counts.pending === 0) {
+        await finaliseScan("completed", "no_more_results");
+        break;
+      }
+      scrollState = "processing";
     }
 
     updateProgress();
     schedulePersist();
+    await waitForScanDelay(CONFIG.autoLoadPauseMs);
   }
 
   autoLoadingActive = false;
+  if (scrollState !== "paused" && scrollState !== "complete" && scrollState !== "error") {
+    scrollState = "idle";
+  }
   recordLifecycleDiagnostic("auto_scroll_stopped");
   updateProgress();
 }
@@ -1516,6 +1707,7 @@ function cancelOutstandingLedgerWork() {
     if (["queued", "scanning"].includes(entry.status)) {
       upsertLedgerEntry(listingId, {
         status: "discovered",
+        workState: "unseen",
         source: "scan-stopped",
         processedAt: null
       });
@@ -1544,6 +1736,7 @@ function stopScanningActivity(reason) {
   scanningActive = false;
   autoLoadingActive = false;
   autoLoadStopRequested = true;
+  scrollState = reason === "user_paused" ? "paused" : reason === "error" ? "error" : "idle";
   scanGeneration += 1;
   clearTimeout(scanTimer);
   clearTimeout(observerTimer);
@@ -1557,6 +1750,7 @@ function stopScanningActivity(reason) {
   clearElapsedTimer();
   cancelScanDelays();
   disconnectDiscoveryObserver();
+  processingQueue?.stop();
   cancelOutstandingLedgerWork();
   cardByListingId = new Map();
   if (runToken) {
@@ -1689,6 +1883,7 @@ async function finaliseScan(status, reason) {
   stopReason = reason;
   scanCompletedAt = Date.now();
   scanFinalised = true;
+  scrollState = status === "failed" ? "error" : "complete";
   lifecycleState = status === "failed"
     ? ScannerLifecycle.transition(lifecycleState, "FAIL")
     : status === "stopped"
@@ -1770,6 +1965,7 @@ async function retryRemoteSync(options = {}) {
   lifecycleState = ScannerLifecycle.transition(lifecycleState, "SYNC");
   remoteSyncError = null;
   remoteSyncState = "syncing";
+  uploadRetryCount = 0;
 
   // Always rebuild payloads from the durable ledger so fixes to payload
   // normalisation apply to previously saved scans.
@@ -1849,6 +2045,7 @@ function resetRunMemory() {
   scanningActive = false;
   autoLoadingActive = false;
   autoLoadStopRequested = true;
+  scrollState = "idle";
   finalising = false;
   scanFinalised = false;
   scanStartedAt = null;
@@ -1871,8 +2068,11 @@ function resetRunMemory() {
   queuedListingIds = new Set();
   pendingUploadsByListingId = new Map();
   uploadInFlight = false;
+  uploadRetryCount = 0;
   progressSyncInFlight = false;
   completionInFlight = false;
+  processingQueue = createProcessingQueue();
+  resetPerformanceDiagnostics();
 }
 
 function activateRunningScan(resumed = false) {
@@ -1882,7 +2082,9 @@ function activateRunningScan(resumed = false) {
   scanningActive = true;
   scanFinalised = false;
   autoLoadStopRequested = false;
+  scrollState = "discovering";
   scanGeneration += 1;
+  ensureProcessingQueue();
   connectDiscoveryObserver();
   armDeadlineTimer();
   armElapsedTimer();
@@ -1908,6 +2110,9 @@ async function startNewScan() {
 
   if (lifecycleState === "interrupted") {
     throw new Error("Resume or discard the interrupted scan before starting a new scan.");
+  }
+  if (lifecycleState === "paused") {
+    throw new Error("Resume or stop the paused scan before starting a new scan.");
   }
 
   if (remoteRun?.scanId && !remoteCompleted) {
@@ -1955,14 +2160,27 @@ async function startNewScan() {
   return getRuntimeProgress();
 }
 
+async function pauseScanByUser() {
+  if (!scanIsRunning() || !remoteRun?.scanId) {
+    throw new Error("There is no running scan to pause.");
+  }
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "PAUSE");
+  scanStatus = "paused";
+  stopScanningActivity("user_paused");
+  recordLifecycleDiagnostic("explicit_pause");
+  updateProgress();
+  schedulePersist(0);
+  return getRuntimeProgress();
+}
+
 async function resumeInterruptedScan() {
-  if (lifecycleState !== "interrupted" || !remoteRun?.scanId) {
-    throw new Error("There is no interrupted scan to resume.");
+  if (!["interrupted", "paused"].includes(lifecycleState) || !remoteRun?.scanId) {
+    throw new Error("There is no paused or interrupted scan to resume.");
   }
   if (!isMarketplaceSearchRoute() || sourceSearchRouteKey !== getRouteKey()) {
     throw new Error("Open the original Marketplace search page before resuming.");
   }
-  runToken = runToken || crypto.randomUUID();
+  runToken = crypto.randomUUID();
   if (!scanDeadlineAt || scanDeadlineAt <= Date.now()) {
     scanDeadlineAt = Date.now() + settings.maximumDurationSeconds * 1000;
   }
@@ -2073,6 +2291,7 @@ async function restoreActiveRun() {
   scanningActive = false;
   autoLoadingActive = false;
   autoLoadStopRequested = true;
+  scrollState = lifecycleState === "paused" ? "paused" : "idle";
   scanFinalised = Boolean(state.scanFinalised);
   remoteRun = state.remoteRun;
   remoteCompleted = Boolean(state.remoteCompleted);
@@ -2092,6 +2311,7 @@ async function restoreActiveRun() {
     if (["queued", "scanning"].includes(entry.status)) {
       upsertLedgerEntry(listingId, {
         status: "discovered",
+        workState: "unseen",
         source: "restored-after-interruption",
         processedAt: null
       });
@@ -2192,6 +2412,7 @@ async function loadSettings() {
     acceptedMakes: VehicleIdentity.normaliseMakeFilters(stored.acceptedMakes),
     acceptedModels: VehicleIdentity.normaliseFilterValues(stored.acceptedModels)
   };
+  resetPerformanceDiagnostics();
 }
 
 function ensurePanel() {
@@ -2387,6 +2608,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return respond(stopScanByUser());
   }
 
+  if (message?.type === "PAUSE_SCAN") {
+    return respond(pauseScanByUser());
+  }
+
   if (message?.type === "RESUME_SCAN") {
     return respond(resumeInterruptedScan());
   }
@@ -2419,6 +2644,7 @@ const observer = new MutationObserver(mutations => {
   if (!scanIsRunning() || isListingRoute()) return;
 
   if (mutations.every(isExtensionMutation)) return;
+  domMutationVersion += 1;
 
   clearTimeout(observerTimer);
   observerTimer = setTimeout(() => {

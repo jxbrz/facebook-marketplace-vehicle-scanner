@@ -16,6 +16,7 @@ On content-script restoration:
 - queued or scanning entries return to `discovered` because their requests cannot be trusted across reload;
 - a previously running/creating/stopping run becomes `interrupted` and never resumes automatically;
 - Resume requires an explicit popup click on the original route;
+- an explicit Pause uses the same run-scoped cancellation, remains non-terminal, and resumes with a fresh run token;
 - Discard removes only the interrupted active-run/runtime-progress records and preserves settings and API token;
 - finalized pending/syncing work may upload automatically, but cannot discover, scroll, extract, or create replacement remote scans;
 - failed/error state waits for explicit Retry sync.

@@ -2,7 +2,7 @@
 
 Single purpose: **Helps authorised vehicle traders scan Facebook Marketplace vehicle listings using configurable filters and securely send the resulting vehicle information to their private sourcing dashboard.**
 
-Scanning begins only after the user clicks **Start scan**. Opening or refreshing Facebook remains idle. Completion, Stop, navigation and configured limits stop discovery and auto-scroll, disconnect observers, cancel queued inspection work and close controlled tabs. Interrupted runs require an explicit Resume or Discard choice.
+Scanning begins only after the user clicks **Start scan**. Opening or refreshing Facebook remains idle. Pause, completion, Stop, navigation and configured limits stop discovery and auto-scroll, disconnect observers, cancel queued inspection work and close controlled tabs. Paused and interrupted runs require an explicit Resume (or applicable Discard) choice.
 
 Google requires the narrowest permissions needed for the current purpose: <https://developer.chrome.com/docs/webstore/cws-dashboard-privacy> and <https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions>.
 
@@ -16,10 +16,10 @@ Google requires the narrowest permissions needed for the current purpose: <https
 
 ### `tabs`
 
-- Feature: identifies the active Marketplace tab from the popup; creates, navigates and closes one inactive controlled listing tab when static Facebook HTML lacks trustworthy advert details; opens completed dashboard results when configured.
+- Feature: identifies the active Marketplace tab from the popup; creates, navigates and closes at most two conservatively spaced inactive controlled listing tabs for trustworthy rendered advert details; opens completed dashboard results when configured.
 - Data enabled: active/controlled tab identifiers and URLs needed for this workflow. It is not used to enumerate or retain unrelated browsing.
 - Why `activeTab` alone is insufficient: the controlled listing extraction and cleanup continue through the background service worker after the initial popup action and must manage a newly created inactive tab. The extension does not request `scripting`; extraction code is declaratively packaged as a Marketplace item content script.
-- Temporary tabs: created only during an explicitly running scan, serialized one at a time, marked before navigation and closed in `finally`, on Stop and on completion/cancellation.
+- Temporary tabs: created only during an explicitly running scan, bounded to two with a conservative start gap, marked before navigation and closed in `finally`, on Pause/Stop and on completion/cancellation.
 
 ## Host permissions
 

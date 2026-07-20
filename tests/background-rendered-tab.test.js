@@ -51,6 +51,14 @@ function createHarness(sendMessage, overrides = {}) {
   return { context, created, updated, removed, runtimeListeners, storageSets, storageValues };
 }
 
+test("rendered inspection uses low bounded concurrency instead of a global promise chain", () => {
+  const source = fs.readFileSync("background.js", "utf8");
+  assert.match(source, /MAX_CONCURRENT_RENDERED_INSPECTIONS = 2/);
+  assert.match(source, /MIN_RENDERED_START_GAP_MS = 750/);
+  assert.match(source, /pendingRenderedInspections/);
+  assert.doesNotMatch(source, /renderedInspectionChain/);
+});
+
 test("migrates the legacy dashboard origin and sends authenticated requests directly to production", async () => {
   const requests = [];
   const harness = createHarness(

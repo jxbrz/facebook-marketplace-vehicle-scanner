@@ -42,6 +42,7 @@ test("terminal cleanup disconnects discovery and cancels run-scoped inspections"
     "clearTimeout(scrollTimer)",
     "cancelScanDelays()",
     "disconnectDiscoveryObserver()",
+    "processingQueue?.stop()",
     "cancelOutstandingLedgerWork()",
     "CANCEL_SCAN_INSPECTIONS"
   ]) {
@@ -74,4 +75,82 @@ test("only freshly inspected Facebook UK mileage receives the label correction",
 
   const restore = functionSource("restoreActiveRun", "async function clearLocalScannerState");
   assert.doesNotMatch(restore, /normaliseFreshFacebookUkMileage/);
+});
+
+test("performance diagnostics are opt-in and expose aggregates without listing text", () => {
+  assert.match(source, /scannerDebugDiagnostics: false/);
+  assert.match(source, /performanceDiagnostics\.snapshot\(\)/);
+  assert.doesNotMatch(source, /recordListing\([^\n]*description/i);
+  assert.doesNotMatch(source, /recordListing\([^\n]*token/i);
+});
+
+test("Pause cancels run-scoped activity without finalising and Resume uses a fresh token", () => {
+  const pause = functionSource("pauseScanByUser", "async function resumeInterruptedScan");
+  assert.match(pause, /transition\(lifecycleState, "PAUSE"\)/);
+  assert.match(pause, /stopScanningActivity\("user_paused"\)/);
+  assert.doesNotMatch(pause, /finaliseScan/);
+
+  const resume = functionSource("resumeInterruptedScan", "async function discardInterruptedScan");
+  assert.match(resume, /\["interrupted", "paused"\]/);
+  assert.match(resume, /runToken = crypto\.randomUUID\(\)/);
+  assert.match(source, /type === "PAUSE_SCAN"[\s\S]{0,100}pauseScanByUser/);
+});
+
+test("auto-scroll never waits for detail work to drain", () => {
+  const autoLoad = functionSource("autoLoadListings", "function cancelOutstandingLedgerWork");
+  assert.doesNotMatch(autoLoad, /waitForActiveWork|hasUnprocessedVisible/);
+  assert.match(autoLoad, /await scanPage\(\)[\s\S]*setScrollTop\(container, nextTop\)/);
+  assert.match(autoLoad, /nextEndDetectionState/);
+  for (const state of ["discovering", "scrolling", "waiting_for_growth", "processing"]) {
+    assert.ok(autoLoad.includes(`scrollState = "${state}"`), `${state} scroll state missing`);
+  }
+});
+
+test("cheap filters and cached results run before bounded detail queueing", () => {
+  const scan = functionSource("scanPage", "function scheduleScan");
+  assert.ok(scan.indexOf("cachedResult") < scan.indexOf("localEvaluation"));
+  assert.ok(scan.indexOf("localEvaluation.rejected") < scan.indexOf("ensureProcessingQueue().enqueue"));
+  assert.doesNotMatch(scan, /processListing\(entry/);
+  assert.match(source, /listingProcessingConcurrency: 3/);
+});
+
+test("progressive uploads are ID-deduplicated, bounded, and independent of discovery", () => {
+  const queueUpload = functionSource("queueRemoteListing", "function scheduleUpload");
+  assert.match(queueUpload, /pendingUploadsByListingId\.set/);
+  assert.match(queueUpload, /scheduleUpload\(\)/);
+  assert.doesNotMatch(queueUpload, /await|scanPage/);
+
+  const flush = functionSource("flushPendingUploads", "function scheduleRemoteProgressSync");
+  assert.match(flush, /slice\(0, CONFIG\.uploadBatchSize\)/);
+  assert.match(flush, /reserveUploadRetry\(\)/);
+  assert.match(source, /uploadMaxRetries: 3/);
+  const retry = functionSource("reserveUploadRetry", "async function flushPendingUploads");
+  assert.match(retry, /uploadRetryCount >= CONFIG\.uploadMaxRetries/);
+
+  const scan = functionSource("scanPage", "function scheduleScan");
+  assert.doesNotMatch(scan, /flushPendingUploads|REMOTE_UPLOAD_LISTINGS/);
+});
+
+test("listing ledger persists every explicit processing lifecycle state", () => {
+  for (const state of [
+    "unseen",
+    "queued",
+    "processing",
+    "processed",
+    "failed_retryable",
+    "failed_final"
+  ]) {
+    assert.ok(source.includes(`workState: "${state}"`) || source.includes(`? "${state}"`), `${state} missing`);
+  }
+});
+
+test("DOM mutations trigger immediate discovery and final IDs never requeue", () => {
+  assert.match(source, /const observer = new MutationObserver[\s\S]*domMutationVersion \+= 1[\s\S]*scheduleScan\(0\)/);
+  const growth = functionSource("waitForListingGrowth", "function waitForAnimationFrame");
+  assert.match(growth, /collectCards\(\)/);
+  assert.match(growth, /currentCount > previousCount \|\| currentHeight > previousHeight/);
+
+  const scan = functionSource("scanPage", "function scheduleScan");
+  assert.match(scan, /existing && isFinalStatus\(existing\.status\)\) continue/);
+  assert.match(scan, /queuedListingIds\.has\(listing\.id\)/);
 });

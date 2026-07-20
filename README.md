@@ -15,8 +15,9 @@ Facebook Marketplace tab
   -> private dashboard
 ```
 
-- `content.js` owns Facebook card discovery, filtering, stopping, the active-run ledger, upload queueing, and recovery.
-- `scanner-lifecycle.js` defines idle/running/interrupted/syncing/terminal rules; only `running` permits Facebook work.
+- `content.js` coordinates continuous Facebook card discovery/scrolling, cheap filtering, the bounded detail queue, the active-run ledger, progressive uploads, stopping, and recovery.
+- `scanner-runtime.js` provides canonical listing identity, recycled-card recovery, scroll-target/end detection, and bounded queueing; `scanner-diagnostics.js` provides opt-in aggregate development timings.
+- `scanner-lifecycle.js` defines idle/running/paused/interrupted/syncing/terminal rules; only `running` permits Facebook work.
 - `vehicle-identity.js` normalizes optional make/model filters and applies explicit aliases plus token-aware matching.
 - `background.js` owns controlled listing-page requests, one-at-a-time inactive detail-tab fallback, and Bearer-authenticated dashboard requests.
 - `listing-details-extractor.js` first reads bounded listing-ID/canonical-URL scoped embedded data, then extracts semantic rendered sections and listing-owned carousel images when static HTML is incomplete.
@@ -68,12 +69,12 @@ Version 23.0.5 migrates the exact legacy `https://facebook-web-filter.vercel.app
 
 ## Scan lifecycle
 
-Opening or reloading Facebook never starts or resumes a scan. Settings load while the scanner remains idle. A fresh remote scan and Facebook discovery begin only after **Start new hosted scan** is clicked. A previously active persisted run appears as **Interrupted scan found** and requires an explicit **Resume scan** or **Discard scan** choice.
+Opening or reloading Facebook never starts or resumes a scan. Settings load while the scanner remains idle. A fresh remote scan and Facebook discovery begin only after **Start new hosted scan** is clicked. **Pause** cancels run-scoped discovery/detail activity without completing the scan and requires an explicit Resume. A previously active persisted run appears as **Interrupted scan found** and requires an explicit **Resume scan** or **Discard scan** choice.
 
 1. The extension creates a hosted scan.
 2. It discovers Facebook cards and records them in a durable local ledger.
 3. Card filters run locally; eligible listings are fetched with the existing Facebook session.
-4. Optional accepted make/model filters use structured identity, listing title, trustworthy attributes, then card title. Card and page text are also checked for controlled S/N/C/D wording. Listing-scoped embedded data supplies details first; when incomplete, one inactive authenticated item tab extracts rendered details, then always closes.
+4. Optional accepted make/model filters use structured identity, listing title, trustworthy attributes, then card title. Card and page text are also checked for controlled S/N/C/D wording. Listing-scoped embedded data supplies details first; a queue bounded to two conservatively spaced inactive authenticated item tabs extracts final rendered details, and each tab always closes.
 5. Completed outcomes are uploaded in idempotent batches.
 6. Scanning stops at the first target, processed, duration, no-more-results, user, navigation, or error condition.
 7. Pending completed outcomes upload before the hosted scan completes.

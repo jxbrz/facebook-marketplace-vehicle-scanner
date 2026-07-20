@@ -10,7 +10,9 @@ The hosted Next.js application authenticates extension requests, validates struc
 
 - `manifest.json`: MV3 configuration, fixed key, permissions, background worker, popup, and ordered content scripts.
 - `content.js`: scan state machine, DOM discovery, durable ledger, filtering, limits, persistence, recovery, and upload scheduling.
-- `background.js`: bounded Facebook fetch queue, serialized inactive-tab rendered fallback with timeout/cleanup, and authenticated dashboard request boundary.
+- `background.js`: bounded Facebook fetch and rendered-tab queues with timeout/cleanup, and authenticated dashboard request boundary.
+- `scanner-runtime.js`: pure canonical-ID, recycled-card, scroll-target, end-detection, and bounded-queue primitives.
+- `scanner-diagnostics.js`: opt-in bounded timing aggregation for development diagnosis.
 - `listing-details-extractor.js`: bounded listing-ID/canonical-URL embedded traversal, semantic rendered-section extraction, and reusable media ranking. `og:image` is the final image fallback.
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
 - `listing-category-pipeline.js`: final trusted-evidence aggregation, provisional/final diagnostics, and final outcome counters.
@@ -41,7 +43,9 @@ The extension stores structured extraction results in the existing bounded cache
 
 Facebook CDN URLs are references, not archived assets, and may expire. The server never fetches them. Seller extraction is limited to the display name and Facebook profile URL present on the listing object; the extension never opens or traverses a seller profile. When a named listing object is unavailable or does not match the requested listing ID, uncertain detail fields are omitted.
 
-Static service-worker fetches can contain only Facebook's initial HTML and omit Relay-hydrated detail. When required fields are incomplete, the background worker creates at most one inactive blank tab, marks it as controlled before navigating it to the item, waits for the existing authenticated page to render, requests only the semantic listing snapshot, and closes the tab in all outcomes. The scanner content script checks that tab marker and skips initialization only there; ordinary visible item navigation retains the existing stop/recovery behavior. Permissions, storage keys, and the visible search tab are unchanged.
+Static service-worker fetches can contain only Facebook's initial HTML and omit Relay-hydrated detail. The background worker creates at most two inactive blank tabs with a conservative start gap, marks each as controlled before navigating it to the item, waits for the existing authenticated page to render, requests only the semantic listing snapshot, and closes each tab in all outcomes. This prevents one slow rendered listing from blocking every worker while retaining final seller-description/category evidence. The scanner content script checks the tab marker and skips initialization only there; ordinary visible item navigation retains the existing stop/recovery behavior. Permissions, storage keys, and the visible search tab are unchanged.
+
+Discovery/scrolling and detail processing are separate coordinated loops. Visible and recycled-card identities enter a canonical-ID ledger, cached outcomes and cheap card filters run first, and only plausible candidates enter a 3-worker/12-committed-item queue. Auto-scroll re-detects the closest card-bearing scroll target on every attempt and never waits for that queue to drain. Uploads remain an independent single-flight, ID-keyed batch flow.
 
 ## Stopping invariants
 

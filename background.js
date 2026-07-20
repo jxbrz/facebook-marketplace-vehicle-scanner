@@ -4,6 +4,8 @@ const MAX_CONCURRENT_REQUESTS = 3;
 const MIN_START_GAP_MS = 350;
 const REQUEST_TIMEOUT_MS = 15000;
 const RENDERED_INSPECTION_TIMEOUT_MS = 12000;
+const MAX_CONCURRENT_RENDERED_INSPECTIONS = 2;
+const MIN_RENDERED_START_GAP_MS = 750;
 
 const pendingJobs = [];
 const jobsByUrl = new Map();
@@ -15,7 +17,10 @@ const inspectionControllersByToken = new Map();
 let activeRequests = 0;
 let lastRequestStartedAt = 0;
 let pumpTimer = null;
-let renderedInspectionChain = Promise.resolve();
+let activeRenderedInspections = 0;
+let lastRenderedInspectionStartedAt = 0;
+let renderedPumpTimer = null;
+const pendingRenderedInspections = [];
 
 function waitForTabComplete(tabId) {
   return new Promise((resolve, reject) => {
@@ -96,10 +101,42 @@ async function inspectRenderedListing(url, listingId, runToken) {
   }
 }
 
+function scheduleRenderedPump(delay = 0) {
+  if (renderedPumpTimer !== null) return;
+  renderedPumpTimer = setTimeout(() => {
+    renderedPumpTimer = null;
+    pumpRenderedInspections();
+  }, delay);
+}
+
+function pumpRenderedInspections() {
+  while (
+    activeRenderedInspections < MAX_CONCURRENT_RENDERED_INSPECTIONS &&
+    pendingRenderedInspections.length
+  ) {
+    const elapsed = Date.now() - lastRenderedInspectionStartedAt;
+    if (elapsed < MIN_RENDERED_START_GAP_MS) {
+      scheduleRenderedPump(MIN_RENDERED_START_GAP_MS - elapsed);
+      return;
+    }
+
+    const job = pendingRenderedInspections.shift();
+    activeRenderedInspections += 1;
+    lastRenderedInspectionStartedAt = Date.now();
+    inspectRenderedListing(job.url, job.listingId, job.runToken)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        activeRenderedInspections -= 1;
+        scheduleRenderedPump();
+      });
+  }
+}
+
 function queueRenderedInspection(url, listingId, runToken) {
-  const inspection = renderedInspectionChain.then(() => inspectRenderedListing(url, listingId, runToken));
-  renderedInspectionChain = inspection.catch(() => {});
-  return inspection;
+  return new Promise((resolve, reject) => {
+    pendingRenderedInspections.push({ url, listingId, runToken, resolve, reject });
+    scheduleRenderedPump();
+  });
 }
 
 function decodeHtmlEntities(value) {
@@ -516,6 +553,13 @@ async function cancelScanInspections(runToken) {
     pendingJobs.splice(index, 1);
     jobsByUrl.delete(job.key);
     for (const listener of job.listeners) listener.reject(new Error("Listing inspection was cancelled."));
+    cancelledJobs += 1;
+  }
+  for (let index = pendingRenderedInspections.length - 1; index >= 0; index -= 1) {
+    const job = pendingRenderedInspections[index];
+    if (job.runToken !== runToken) continue;
+    pendingRenderedInspections.splice(index, 1);
+    job.reject(new Error("Listing inspection was cancelled."));
     cancelledJobs += 1;
   }
   const tabIds = [...controlledDetailTabTokens.entries()]

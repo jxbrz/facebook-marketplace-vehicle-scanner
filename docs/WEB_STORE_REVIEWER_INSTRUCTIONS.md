@@ -26,7 +26,7 @@ Facebook may challenge unfamiliar logins. Prefer a reviewer-owned Facebook accou
    - Extension API token: `[TEMPORARY_REVIEW_API_TOKEN]`
 5. Set Target matches to `1`, Maximum processed to `5`, and Maximum duration to `2` minutes. Leave make/model filters empty unless the supplied search instructions specify test values.
 6. Click **Start scan**. Merely opening/reloading Facebook does not start scanning.
-7. Expected behaviour: the search page may auto-scroll; at most one inactive Facebook listing tab is opened at a time for missing details and closes automatically; the panel stops at the first configured limit.
+7. Expected behaviour: the search page may auto-scroll; at most two conservatively spaced inactive Facebook listing tabs are open for missing details and each closes automatically; the panel stops at the first configured limit.
 8. Click **Open results** or allow configured auto-open. Sign in to the isolated dashboard with:
    - Email: `[TEMPORARY_REVIEW_DASHBOARD_EMAIL]`
    - Password: `[TEMPORARY_REVIEW_DASHBOARD_PASSWORD]`
@@ -39,7 +39,7 @@ Facebook may challenge unfamiliar logins. Prefer a reviewer-owned Facebook accou
 - Network requests to the dashboard use HTTPS and an Authorization Bearer header.
 - Request bodies contain structured Marketplace advert data, not Facebook passwords or cookies.
 - No remote scripts are loaded; all logic is in the submitted ZIP.
-- Press Stop to verify observers/auto-scroll/queues stop and controlled tabs close.
+- Press Pause or Stop to verify observers/auto-scroll/queues stop and controlled tabs close; Resume restarts only after an explicit click.
 
 ## Revocation
 

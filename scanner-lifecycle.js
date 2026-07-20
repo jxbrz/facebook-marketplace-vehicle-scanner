@@ -19,6 +19,9 @@
     }
 
     const status = String(state.scanStatus || "idle");
+    if (!state.scanFinalised && status === "paused") {
+      return { lifecycleState: "paused", historicalStatus: status, allowSyncRecovery: false };
+    }
     const wasExecuting = Boolean(state.scanningActive) || ["creating", "running", "stopping", "interrupted"].includes(status);
     if (!state.scanFinalised && wasExecuting) {
       return { lifecycleState: "interrupted", historicalStatus: status, allowSyncRecovery: false };
@@ -42,8 +45,9 @@
 
   function transition(currentState, event) {
     if (event === "START" && currentState !== "interrupted") return "running";
-    if (event === "RESUME" && currentState === "interrupted") return "running";
-    if (event === "STOP" && currentState === "running") return "stopping";
+    if (event === "RESUME" && ["interrupted", "paused"].includes(currentState)) return "running";
+    if (event === "PAUSE" && currentState === "running") return "paused";
+    if (event === "STOP" && ["running", "paused"].includes(currentState)) return "stopping";
     if (event === "SYNC" && currentState !== "running" && currentState !== "stopping") return "syncing";
     if (event === "COMPLETE") return "completed";
     if (event === "STOPPED") return "stopped";

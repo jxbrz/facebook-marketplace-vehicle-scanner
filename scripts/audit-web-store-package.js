@@ -12,6 +12,8 @@ const EXPECTED_FILES = [
   "listing-category-pipeline.js",
   "mileage-utils.js",
   "scanner-lifecycle.js",
+  "scanner-diagnostics.js",
+  "scanner-runtime.js",
   "vehicle-identity.js",
   "listing-details-extractor.js",
   "payload-normalizer.js",

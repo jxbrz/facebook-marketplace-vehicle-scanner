@@ -152,12 +152,13 @@
 
     <div class="actions primary-actions">
       <button id="startScan" class="primary" type="button">Start new hosted scan</button>
+      <button id="pauseScan" type="button">Pause</button>
       <button id="stopScan" type="button">Stop</button>
     </div>
 
     <section id="recoveryActions" hidden>
-      <h2>Interrupted scan found</h2>
-      <p class="section-note">Scanning is paused. Resume explicitly or discard only this interrupted run.</p>
+      <h2 id="recoveryTitle">Interrupted scan found</h2>
+      <p id="recoveryText" class="section-note">Resume explicitly or discard only this interrupted run.</p>
       <div class="actions recovery-actions">
         <button id="resumeScan" class="primary" type="button">Resume scan</button>
         <button id="discardScan" type="button">Discard scan</button>

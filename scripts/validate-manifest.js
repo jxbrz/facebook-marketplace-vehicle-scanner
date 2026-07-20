@@ -27,6 +27,8 @@ assert.deepEqual(manifest.content_scripts[0].js, [
   "listing-category-pipeline.js",
   "mileage-utils.js",
   "scanner-lifecycle.js",
+  "scanner-diagnostics.js",
+  "scanner-runtime.js",
   "vehicle-identity.js",
   "content.js"
 ]);

@@ -49,11 +49,14 @@ const elements = {
   acceptedModels: document.querySelector("#acceptedModels"),
   excludedKeywords: document.querySelector("#excludedKeywords"),
   startScan: document.querySelector("#startScan"),
+  pauseScan: document.querySelector("#pauseScan"),
   stopScan: document.querySelector("#stopScan"),
   openResults: document.querySelector("#openResults"),
   retrySync: document.querySelector("#retrySync"),
   clearState: document.querySelector("#clearState"),
   recoveryActions: document.querySelector("#recoveryActions"),
+  recoveryTitle: document.querySelector("#recoveryTitle"),
+  recoveryText: document.querySelector("#recoveryText"),
   resumeScan: document.querySelector("#resumeScan"),
   discardScan: document.querySelector("#discardScan"),
   status: document.querySelector("#status"),
@@ -210,11 +213,19 @@ function updateProgress(progress) {
   elements.unavailable.textContent = progress?.unavailable ?? 0;
   elements.pending.textContent = progress?.pending ?? 0;
 
-  elements.stopScan.disabled = !progress?.scanningActive;
+  elements.pauseScan.disabled = !progress?.scanningActive;
+  elements.stopScan.disabled = !progress?.scanningActive && !progress?.paused;
   elements.openResults.disabled = !progress?.resultsUrl;
   elements.retrySync.disabled = !progress?.canRetrySync;
-  elements.startScan.disabled = Boolean(progress?.interrupted);
-  elements.recoveryActions.hidden = !progress?.interrupted;
+  elements.startScan.disabled = Boolean(progress?.canResume);
+  elements.recoveryActions.hidden = !progress?.canResume;
+  elements.discardScan.hidden = Boolean(progress?.paused);
+  elements.recoveryTitle.textContent = progress?.paused
+    ? "Scan paused"
+    : "Interrupted scan found";
+  elements.recoveryText.textContent = progress?.paused
+    ? "Discovery, scrolling, and new listing work are stopped. Resume or stop this scan."
+    : "Resume explicitly or discard only this interrupted run.";
 
   if (!progress?.scanId) {
     elements.status.textContent = "Ready to start a new hosted scan.";
@@ -237,6 +248,11 @@ function updateProgress(progress) {
 
   if (progress.interrupted) {
     elements.status.textContent = "Interrupted scan found. Choose Resume scan or Discard scan.";
+    return;
+  }
+
+  if (progress.paused) {
+    elements.status.textContent = "Scan paused. Choose Resume scan or Stop.";
     return;
   }
 
@@ -313,9 +329,18 @@ elements.stopScan.addEventListener("click", async () => {
   }
 });
 
+elements.pauseScan.addEventListener("click", async () => {
+  try {
+    elements.status.textContent = "Pausing scan…";
+    updateProgress(await sendToActiveTab({ type: "PAUSE_SCAN" }));
+  } catch (error) {
+    elements.status.textContent = error.message || String(error);
+  }
+});
+
 elements.resumeScan.addEventListener("click", async () => {
   try {
-    elements.status.textContent = "Resuming interrupted scan…";
+    elements.status.textContent = "Resuming scan…";
     updateProgress(await sendToActiveTab({ type: "RESUME_SCAN" }));
   } catch (error) {
     elements.status.textContent = error.message || String(error);

@@ -24,7 +24,7 @@ The scanner detects explicit seller disclosures for insurance Categories S, N, C
 
 Structured results are synchronised over HTTPS to the private Kelmar vehicle sourcing dashboard. There, authorised dealership users can review scan history, open the original Facebook advert, use the cross-scan Saved Vehicles workspace, maintain shared notes and move a vehicle through Shortlisted, Contacted, Viewing arranged, Bought, Dismissed or Unavailable workflow states.
 
-Scanning starts only after a user action and stops at the selected target, processing or time limit, when results are exhausted, or when the user presses Stop. The extension may open one inactive Facebook listing tab at a time to obtain advert details that are not available in the search card; controlled tabs close automatically.
+Scanning starts only after a user action and stops at the selected target, processing or time limit, when results are exhausted, or when the user presses Stop. Pause cancels current scanning activity until the user explicitly resumes. The extension may open at most two conservatively spaced inactive Facebook listing tabs to obtain advert details that are not available in the search card; controlled tabs close automatically.
 
 Private dealership use only. Requires an authorised dashboard URL/API token and a Facebook account with Marketplace access.
 

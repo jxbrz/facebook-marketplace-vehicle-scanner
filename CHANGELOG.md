@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (recommended 23.0.6)
+
+- Separated continuous discovery/auto-scroll from bounded detail processing so slow rendered listings and dashboard uploads cannot hold the page stationary.
+- Added canonical-ID lifecycle queueing, one bounded transient retry, recycled-DOM recovery, closer scroll-target selection, mutation/height growth detection, and repeated end-of-results confirmation.
+- Increased only the rendered-detail stage from one to two conservatively spaced workers, retained three total listing workers and the 12-item committed-work cap, and bounded automatic upload retries.
+- Added explicit Pause/Resume cleanup, development-only aggregate timing diagnostics, and scrolling/queue/deduplication regression coverage without changing permissions, authentication, API payloads, or production data.
+
 ## 23.0.5 - 2026-07-15
 
 - Migrated the exact legacy Vercel dashboard origin stored by existing installations to `https://sourcing.kelmarvehiclesltd.co.uk` before any authenticated API request or results-page navigation.
