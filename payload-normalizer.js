@@ -174,6 +174,15 @@
     const mileageUnitSource = mileageUnit === "mi" && listing.mileageUnitSource === "facebook_uk_label_correction"
       ? listing.mileageUnitSource
       : null;
+    const imageExtractionStatus = ["complete", "partial", "unavailable"].includes(listing.imageExtractionStatus)
+      ? listing.imageExtractionStatus
+      : "unavailable";
+    const imageUrls = imageExtractionStatus === "unavailable"
+      ? []
+      : normaliseImageUrls(listing.imageUrls);
+    const imageUrl = imageExtractionStatus === "unavailable"
+      ? null
+      : normaliseHttpUrl(listing.imageUrl, "imageUrl", true) || imageUrls[0] || null;
 
     return {
       externalListingId: normaliseRequiredText(
@@ -198,8 +207,9 @@
       fuelType: normaliseNullableText(listing.fuelType, 80),
       transmission: normaliseNullableText(listing.transmission, 80),
       bodyStyle: normaliseNullableText(listing.bodyStyle, 80),
-      imageUrl: normaliseHttpUrl(listing.imageUrl, "imageUrl", true),
-      imageUrls: normaliseImageUrls(listing.imageUrls),
+      imageUrl,
+      imageUrls,
+      imageExtractionStatus,
       descriptionExcerpt: normaliseNullableText(listing.descriptionExcerpt, 2000),
       fullDescription: normalisePreservedText(listing.fullDescription, LIMITS.fullDescriptionCharacters),
       vehicleAttributes: normaliseVehicleAttributes(listing.vehicleAttributes),

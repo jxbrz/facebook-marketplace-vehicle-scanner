@@ -8,6 +8,7 @@ function listing(overrides = {}) {
     sourceUrl: "https://www.facebook.com/marketplace/item/123/",
     status: "matched",
     currency: "GBP",
+    imageExtractionStatus: "complete",
     rawMetadata: {},
     ...overrides
   };
@@ -115,7 +116,7 @@ test("normalises valid category, currency, URLs, and nullable text", () => {
 });
 
 test("preserves full-description line breaks and remains backward compatible", () => {
-  const oldResult = normaliseRemoteListing(listing());
+  const oldResult = normaliseRemoteListing(listing({ imageExtractionStatus: undefined }));
   assert.equal(oldResult.fullDescription, null);
   assert.deepEqual(oldResult.imageUrls, []);
   assert.deepEqual({ ...oldResult.vehicleAttributes }, {});
@@ -124,6 +125,19 @@ test("preserves full-description line breaks and remains backward compatible", (
     fullDescription: "  First line\r\n\r\nSecond line  "
   }));
   assert.equal(result.fullDescription, "First line\n\nSecond line");
+});
+
+test("unavailable and legacy payloads cannot replay untrusted images", () => {
+  for (const imageExtractionStatus of [undefined, "unavailable"]) {
+    const result = normaliseRemoteListing(listing({
+      imageExtractionStatus,
+      imageUrl: "https://example.com/stale-primary.jpg",
+      imageUrls: ["https://example.com/stale-gallery.jpg"]
+    }));
+    assert.equal(result.imageExtractionStatus, "unavailable");
+    assert.equal(result.imageUrl, null);
+    assert.deepEqual(result.imageUrls, []);
+  }
 });
 
 test("deduplicates, caps, and safely omits malformed image URLs", () => {

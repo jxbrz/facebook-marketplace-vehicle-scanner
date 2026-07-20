@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.0.6";
+const EXTENSION_VERSION = "23.0.7";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -109,6 +109,7 @@ let storageFixedBytes = 0;
 let processingQueue = null;
 let domMutationVersion = 0;
 let debugSummaryLastLoggedAt = 0;
+let imageDiagnosticsLogged = false;
 const scanDelayWaits = new Set();
 
 function resetPerformanceDiagnostics() {
@@ -130,6 +131,18 @@ function maybeLogPerformanceSummary(progress) {
     queued: progress.queued,
     activeWorkers: progress.scanning,
     ...progress.performanceDiagnostics
+  });
+}
+
+function maybeLogImageExtractionDiagnostics(listingId, result) {
+  if (!settings.scannerDebugDiagnostics || imageDiagnosticsLogged || !result?.imageDiagnostics) return;
+  imageDiagnosticsLogged = true;
+  console.info("Marketplace Vehicle Scanner image ownership summary:", {
+    listingId: String(listingId || "").slice(0, 160),
+    extractionSource: result.listingDetailExtractionSource || result.extractionSource || null,
+    imageExtractionStatus: result.imageExtractionStatus || "unavailable",
+    ...result.imageDiagnostics,
+    finalImageCount: Array.isArray(result.imageUrls) ? result.imageUrls.length : 0
   });
 }
 
@@ -277,7 +290,7 @@ function getCardLines(card) {
     .filter(value => !/^(Not scanned|Queued|Scanning…|Matches filters)$/i.test(value));
 }
 
-function extractCardMetadata(card) {
+function extractCardMetadata(card, listingId, sourceAnchor) {
   const lines = getCardLines(card);
   const text = lines.join(" ");
   const yearMatch = text.match(/\b(19[8-9]\d|20[0-3]\d)\b/);
@@ -338,7 +351,11 @@ function extractCardMetadata(card) {
     /\bmanual\b/i.test(text) ? "manual" : null;
 
   const sellerType = /\bdealer(?:ship)?\b/i.test(text) ? "dealer" : null;
-  const image = card.querySelector("img[src]");
+  const listingAnchors = [sourceAnchor, ...card.querySelectorAll('a[href*="/item/"]')]
+    .filter(Boolean)
+    .filter((anchor, index, values) => values.indexOf(anchor) === index)
+    .filter(anchor => normaliseListingUrl(anchor.href)?.id === listingId);
+  const image = listingAnchors.map(anchor => anchor.querySelector("img[src]")).find(Boolean) || null;
   const imageUrl = image?.currentSrc || image?.src || null;
 
   return {
@@ -351,7 +368,8 @@ function extractCardMetadata(card) {
     sellerType,
     fuelType,
     transmission,
-    imageUrl: imageUrl ? truncate(imageUrl, 1600) : null
+    imageUrl: imageUrl ? truncate(imageUrl, 1600) : null,
+    imageOwnerListingId: imageUrl ? listingId : null
   };
 }
 
@@ -825,7 +843,7 @@ function collectCards() {
     const rect = card.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
 
-    const metadata = extractCardMetadata(card);
+    const metadata = extractCardMetadata(card, listing.id, anchor);
     markDiscovered(listing, metadata);
     cardByListingId.set(listing.id, card);
 
@@ -891,7 +909,8 @@ async function inspectListing(url, priority) {
     type: "INSPECT_LISTING",
     url,
     priority,
-    runToken
+    runToken,
+    debug: settings.scannerDebugDiagnostics === true
   });
 }
 
@@ -939,6 +958,11 @@ function normaliseFreshFacebookUkMileage(result) {
 
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
+  const listingImages = ListingDetailsExtractor.resolveListingImages(result, {
+    listingId: entry.listingId,
+    sourceListingId: metadata.imageOwnerListingId,
+    imageUrl: metadata.imageUrl
+  });
   const vehicleAttributes = { ...(result?.vehicleAttributes || {}) };
   if (result?.detectedMake) vehicleAttributes["Advert make"] = truncate(result.detectedMake, 80);
   if (result?.detectedModel) vehicleAttributes["Advert model"] = truncate(result.detectedModel, 80);
@@ -995,8 +1019,9 @@ function buildRemoteListing(entry, result = null) {
     fuelType: metadata.fuelType || result?.fuelType || null,
     transmission: metadata.transmission || result?.transmission || null,
     bodyStyle: null,
-    imageUrl: result?.primaryImageUrl || metadata.imageUrl || null,
-    imageUrls: Array.isArray(result?.imageUrls) ? result.imageUrls : [],
+    imageUrl: listingImages.imageUrl,
+    imageUrls: listingImages.imageUrls,
+    imageExtractionStatus: listingImages.imageExtractionStatus,
     descriptionExcerpt: result?.evidenceExcerpt
       ? truncate(result.evidenceExcerpt, 600)
       : result?.context
@@ -1370,6 +1395,8 @@ async function processListing(entry, generation) {
   }
 
   if (!scanIsRunning() || generation !== scanGeneration) return;
+
+  maybeLogImageExtractionDiagnostics(listing.id, result);
 
   await saveCachedResult(listing.id, result);
   classifyListing(listing.id, metadata, result, "facebook-listing-page");
@@ -2091,6 +2118,7 @@ function resetRunMemory() {
   lastUploadAttemptAt = null;
   progressSyncInFlight = false;
   completionInFlight = false;
+  imageDiagnosticsLogged = false;
   processingQueue = createProcessingQueue();
   resetPerformanceDiagnostics();
 }

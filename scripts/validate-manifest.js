@@ -33,17 +33,11 @@ assert.deepEqual(manifest.content_scripts[0].js, [
   "scanner-runtime.js",
   "scanner-storage.js",
   "vehicle-identity.js",
+  "listing-details-extractor.js",
   "content.js"
 ]);
 assert.equal(manifest.content_scripts[0].exclude_matches, undefined);
-assert.deepEqual(manifest.content_scripts[1], {
-  matches: [
-    "https://www.facebook.com/marketplace/item/*",
-    "https://facebook.com/marketplace/item/*"
-  ],
-  js: ["listing-details-extractor.js"],
-  run_at: "document_idle"
-});
+assert.equal(manifest.content_scripts.length, 1);
 
 const digest = crypto
   .createHash("sha256")

@@ -60,12 +60,18 @@
 
   function sanitisePendingUpload(payload) {
     if (!payload || typeof payload !== "object") return null;
-    const imageUrls = normaliseImageUrls(payload.imageUrls);
-    const imageUrl = validHttpsUrl(payload.imageUrl) || imageUrls[0] || null;
+    const imageExtractionStatus = ["complete", "partial", "unavailable"].includes(payload.imageExtractionStatus)
+      ? payload.imageExtractionStatus
+      : "unavailable";
+    const imageUrls = imageExtractionStatus === "unavailable" ? [] : normaliseImageUrls(payload.imageUrls);
+    const imageUrl = imageExtractionStatus === "unavailable"
+      ? null
+      : validHttpsUrl(payload.imageUrl) || imageUrls[0] || null;
     return {
       ...payload,
       imageUrl,
-      imageUrls
+      imageUrls,
+      imageExtractionStatus
     };
   }
 

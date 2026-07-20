@@ -14,7 +14,9 @@
   ) {
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message?.type !== "EXTRACT_RENDERED_LISTING_DETAILS") return false;
-      extractor.collectRenderedListingDetails(String(message.listingId || ""))
+      extractor.collectRenderedListingDetails(String(message.listingId || ""), {
+        debug: message.debug === true
+      })
         .then(result => sendResponse({ ok: true, result }))
         .catch(error => sendResponse({
           ok: false,
@@ -55,6 +57,7 @@
   const SELLER_KEYS = new Set(["marketplace_listing_seller", "marketplaceListingSeller", "marketplaceSeller", "seller"]);
   const LISTED_AT_KEYS = new Set(["listed_at_text", "listedAtText", "creation_time_text", "creationTimeText", "listing_date_text", "listingDateText"]);
   const UI_LINE_PATTERN = /^(?:see more|see less|show more|show less|next|previous|share|save|message)$/i;
+  const EXCLUDED_IMAGE_ANCESTRY = new Set(["seller", "recommended", "nearby-listing", "navigation", "ui"]);
   const SECTION_STOP_PATTERN = /^(?:about this vehicle|seller['’]s description|seller information|about the seller|seller details|location|marketplace|you may also like|more from this seller|sponsored)$/i;
 
   function decodeEntities(value) {
@@ -214,6 +217,43 @@
     return values;
   }
 
+  function hasForeignListingReference(value, listingId) {
+    if (!listingId || !value || typeof value !== "object" || Array.isArray(value)) return false;
+    const entries = Object.entries(value);
+    const looksLikeListing = entries.some(([key, item]) =>
+      PHOTO_KEYS.has(key) ||
+      URL_KEYS.has(key) && typeof item === "string" && /\/marketplace\/item\/\d+/.test(item)
+    );
+    if (!looksLikeListing) return false;
+    return entries.some(([key, item]) =>
+      LISTING_ID_KEYS.has(key) && /^\d+$/.test(String(item)) && String(item) !== listingId ||
+      URL_KEYS.has(key) && typeof item === "string" &&
+        /\/marketplace\/item\/(\d+)/.test(item) && !item.includes(`/marketplace/item/${listingId}`)
+    );
+  }
+
+  function findListingScopedNamedValues(root, keys, listingId, maximumDepth = 6) {
+    const values = [];
+    const stack = [{ value: root, depth: 0 }];
+    const seen = new Set();
+    while (stack.length && seen.size < 5000) {
+      const current = stack.pop();
+      if (!current.value || typeof current.value !== "object" || seen.has(current.value)) continue;
+      seen.add(current.value);
+      if (current.depth > 0 && hasForeignListingReference(current.value, listingId)) continue;
+      if (!Array.isArray(current.value)) {
+        for (const [key, value] of Object.entries(current.value)) {
+          if (keys.has(key)) values.push(value);
+        }
+      }
+      if (current.depth >= maximumDepth) continue;
+      for (const child of Array.isArray(current.value) ? current.value : Object.values(current.value)) {
+        if (child && typeof child === "object") stack.push({ value: child, depth: current.depth + 1 });
+      }
+    }
+    return values;
+  }
+
   function parseMileageDetail(value) {
     const text = normaliseText(value, LIMITS.mileageOriginalTextCharacters);
     if (!text) return null;
@@ -233,30 +273,141 @@
     return (candidate.listingOwned === false ? -1000000 : 100000) + sourceScore + Math.round(area / 1000) - (candidate.thumbnail ? 20000 : 0);
   }
 
+  function facebookAssetIdentity(value) {
+    if (!isFacebookImageUrl(value)) return null;
+    const url = new URL(value);
+    return `${url.hostname.toLowerCase()}${url.pathname}`;
+  }
+
+  function shortPathHash(value) {
+    let hash = 2166136261;
+    for (const character of String(value || "")) {
+      hash ^= character.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function rejectImageCandidate(candidate) {
+    const rawUrl = String(candidate?.url || "");
+    if (/^blob:/i.test(rawUrl)) return "blob URL";
+    if (/^data:/i.test(rawUrl)) return "data URL";
+    if (/^javascript:/i.test(rawUrl)) return "malformed URL";
+    let parsed;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      return "malformed URL";
+    }
+    if (parsed.protocol !== "https:") return "insecure URL";
+    if (!isFacebookImageUrl(rawUrl)) return "unsupported source";
+    if (candidate.foreignListingId) return "outside active listing";
+    if (EXCLUDED_IMAGE_ANCESTRY.has(candidate.ancestryCategory)) {
+      if (candidate.ancestryCategory === "seller") return "seller avatar/profile";
+      if (["recommended", "nearby-listing"].includes(candidate.ancestryCategory)) return "recommended listing";
+      return "navigation/UI asset";
+    }
+    if (candidate.listingOwned === false || candidate.insideListingRoot === false) return "outside active listing";
+    if (candidate.insideGallery === false) return "outside main gallery";
+    const width = Number(candidate.width) || 0;
+    const height = Number(candidate.height) || 0;
+    if (width > 0 && height > 0 && ((width <= 128 && height <= 128) || width * height < 10000)) {
+      return "tiny/icon-sized";
+    }
+    return null;
+  }
+
+  function candidateDiagnostic(candidate, accepted, reason = null) {
+    let host = "invalid";
+    let pathHash = "invalid";
+    try {
+      const parsed = new URL(String(candidate?.url || ""));
+      host = parsed.hostname.toLowerCase().slice(0, 120);
+      pathHash = shortPathHash(parsed.pathname);
+    } catch {
+      // The diagnostic deliberately records no URL content.
+    }
+    return {
+      host,
+      pathHash,
+      width: Number(candidate?.width) || 0,
+      height: Number(candidate?.height) || 0,
+      ancestryCategory: String(candidate?.ancestryCategory || "unknown").slice(0, 40),
+      insideListingRoot: candidate?.insideListingRoot !== false,
+      matchedMainGallery: candidate?.insideGallery !== false,
+      accepted,
+      reason
+    };
+  }
+
+  function filterOwnedImageCandidates(candidates) {
+    const accepted = [];
+    const rejected = [];
+    const rejectionReasons = Object.create(null);
+    for (const candidate of Array.isArray(candidates) ? candidates : []) {
+      const reason = rejectImageCandidate(candidate);
+      if (reason) {
+        rejectionReasons[reason] = (rejectionReasons[reason] || 0) + 1;
+        rejected.push(candidateDiagnostic(candidate, false, reason));
+      } else {
+        accepted.push(candidate);
+      }
+    }
+    return { accepted, rejected, rejectionReasons };
+  }
+
   function rankImageCandidates(candidates) {
+    const filtered = filterOwnedImageCandidates(candidates);
     const bestByIdentity = new Map();
     let discoveryIndex = 0;
-    for (const raw of Array.isArray(candidates) ? candidates : []) {
+    for (const raw of filtered.accepted) {
       const candidate = { ...raw, discoveryIndex: raw.discoveryIndex ?? discoveryIndex++ };
-      if (!isFacebookImageUrl(candidate.url) || candidate.listingOwned === false) continue;
-      const identity = candidate.mediaId ? `media:${candidate.mediaId}` : `url:${candidate.url}`;
+      const stableMediaId = candidate.mediaId && !/^(?:rendered|embedded-order):?/i.test(candidate.mediaId)
+        ? candidate.mediaId
+        : null;
+      const identity = stableMediaId
+        ? `media:${stableMediaId}`
+        : `asset:${facebookAssetIdentity(candidate.url)}`;
       const existing = bestByIdentity.get(identity);
-      if (!existing || imageQuality(candidate) > imageQuality(existing)) bestByIdentity.set(identity, candidate);
+      if (existing) {
+        filtered.rejectionReasons.duplicate = (filtered.rejectionReasons.duplicate || 0) + 1;
+      }
+      if (!existing || imageQuality(candidate) > imageQuality(existing)) {
+        bestByIdentity.set(identity, {
+          ...candidate,
+          order: existing ? Math.min(Number(existing.order) || 0, Number(candidate.order) || 0) : candidate.order,
+          discoveryIndex: existing ? Math.min(existing.discoveryIndex, candidate.discoveryIndex) : candidate.discoveryIndex
+        });
+      }
     }
     const ordered = [...bestByIdentity.values()].sort((left, right) =>
       (Number(left.order) || 0) - (Number(right.order) || 0) ||
       left.discoveryIndex - right.discoveryIndex ||
       left.url.localeCompare(right.url)
     );
-    const seenUrls = new Set();
+    const seenAssets = new Set();
     const ranked = ordered.filter(candidate => {
-      if (seenUrls.has(candidate.url)) return false;
-      seenUrls.add(candidate.url);
+      const identity = facebookAssetIdentity(candidate.url) || candidate.url;
+      if (seenAssets.has(identity)) {
+        filtered.rejectionReasons.duplicate = (filtered.rejectionReasons.duplicate || 0) + 1;
+        return false;
+      }
+      seenAssets.add(identity);
       return true;
     }).slice(0, LIMITS.imageCount);
     return {
       primaryImageUrl: ranked[0]?.url ?? null,
-      imageUrls: ranked.map(candidate => candidate.url)
+      imageUrls: ranked.map(candidate => candidate.url),
+      imageDiagnostics: {
+        candidateCount: (Array.isArray(candidates) ? candidates : []).length,
+        acceptedCount: ranked.length,
+        rejectedCount: (Array.isArray(candidates) ? candidates : []).length - ranked.length,
+        rejectionReasons: { ...filtered.rejectionReasons },
+        candidates: [
+          ...ranked.slice(0, 10).map(candidate => candidateDiagnostic(candidate, true)),
+          ...filtered.rejected.slice(0, 10)
+        ].slice(0, 20)
+      }
     };
   }
 
@@ -284,6 +435,9 @@
           order: context.order,
           source: "embedded",
           listingOwned: true,
+          insideListingRoot: true,
+          insideGallery: true,
+          ancestryCategory: "listing-gallery",
           thumbnail: /thumbnail|thumb/i.test(key) || (width > 0 && width < 500)
         });
       }
@@ -346,25 +500,56 @@
     return null;
   }
 
-  function extractEmbeddedImages(candidates, html) {
+  function extractEmbeddedImages(candidates, html, listingId, debug = false) {
     const imageCandidates = [];
     for (const candidate of candidates) {
       let order = 0;
-      for (const value of findNamedValues(candidate, PHOTO_KEYS)) {
+      for (const value of findListingScopedNamedValues(candidate, PHOTO_KEYS, listingId)) {
         collectImageCandidates(value, { order: order * 100, width: 0, height: 0, mediaId: null }, imageCandidates);
         order += 1;
       }
       if (imageCandidates.length) break;
     }
-    for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
-      const tag = match[0];
-      const property = tag.match(/(?:property|name)\s*=\s*["']([^"']+)["']/i)?.[1];
-      const content = tag.match(/content\s*=\s*["']([^"']+)["']/i)?.[1];
-      if (!/^og:image(?::url)?$/i.test(property || "") || !content) continue;
-      const url = decodeEntities(content);
-      if (isFacebookImageUrl(url)) imageCandidates.push({ url, width: 0, height: 0, mediaId: "og-image", order: 999999, source: "og", listingOwned: true, thumbnail: true });
+    const structuredCandidateCount = imageCandidates.length;
+    if (!structuredCandidateCount && candidates.length) {
+      for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
+        const tag = match[0];
+        const property = tag.match(/(?:property|name)\s*=\s*["']([^"']+)["']/i)?.[1];
+        const content = tag.match(/content\s*=\s*["']([^"']+)["']/i)?.[1];
+        if (!/^og:image(?::url)?$/i.test(property || "") || !content) continue;
+        const url = decodeEntities(content);
+        if (isFacebookImageUrl(url)) imageCandidates.push({
+          url,
+          width: 0,
+          height: 0,
+          mediaId: "og-image",
+          order: 0,
+          source: "og",
+          listingOwned: true,
+          insideListingRoot: true,
+          insideGallery: true,
+          ancestryCategory: "listing-open-graph",
+          thumbnail: true
+        });
+      }
     }
-    return rankImageCandidates(imageCandidates);
+    const ranked = rankImageCandidates(imageCandidates);
+    const { imageDiagnostics, ...images } = ranked;
+    return {
+      ...images,
+      imageDiagnostics: debug ? {
+        ...imageDiagnostics,
+        extractionSource: structuredCandidateCount ? "listing-scoped-embedded-data" : "listing-open-graph",
+        galleryContainerIdentity: structuredCandidateCount ? "embedded-photo-field" : "open-graph-fallback",
+        wrapped: false,
+        finalImageCount: images.imageUrls.length
+      } : null,
+      imageExtractionStatus: structuredCandidateCount && images.imageUrls.length
+        ? "complete"
+        : images.imageUrls.length
+          ? "partial"
+          : "unavailable"
+    };
   }
 
   function extractListingDetails(html, options = {}) {
@@ -373,7 +558,7 @@
     const candidates = findListingCandidates(parseEmbeddedJson(source), listingId, options.canonicalUrl);
     const vehicleAttributes = extractAttributes(candidates);
     const fields = recognisedFields(vehicleAttributes);
-    const images = extractEmbeddedImages(candidates, source);
+    const images = extractEmbeddedImages(candidates, source, listingId, options.debug === true);
 
     let sellerName = null;
     let sellerProfileUrl = null;
@@ -481,12 +666,18 @@
       setAttribute(`Detail ${detailNumber++}`, line, index);
     });
 
-    const images = rankImageCandidates(snapshot?.imageCandidates || []);
+    const ranked = rankImageCandidates(snapshot?.imageCandidates || []);
+    const { imageDiagnostics, ...images } = ranked;
     const recognised = recognisedFields(vehicleAttributes);
     return {
       listingTitle: normaliseText(snapshot?.listingTitle, 500),
       fullDescription: descriptionLines.length ? descriptionLines.join("\n") : null,
       ...images,
+      imageExtractionStatus: snapshot?.imageExtractionStatus || (images.imageUrls.length ? "complete" : "unavailable"),
+      imageDiagnostics: snapshot?.includeImageDiagnostics ? {
+        ...imageDiagnostics,
+        ...(snapshot.galleryDiagnostics || {})
+      } : null,
       vehicleAttributes,
       mileageDetail,
       transmission,
@@ -503,15 +694,20 @@
 
   function mergeListingDetails(embedded, rendered) {
     if (!rendered) return embedded;
-    const embeddedImages = Array.isArray(embedded?.imageUrls) ? embedded.imageUrls : [];
-    const renderedImages = Array.isArray(rendered.imageUrls) ? rendered.imageUrls : [];
-    const preferEmbeddedImages = embedded?.structuredDetailsFound && embeddedImages.length > 1;
-    const imageUrls = [...new Set(preferEmbeddedImages ? [...embeddedImages, ...renderedImages] : [...renderedImages, ...embeddedImages])].slice(0, LIMITS.imageCount);
+    const imageSources = [embedded, rendered];
+    const selectedImages = imageSources.find(details =>
+      details?.imageExtractionStatus === "complete" && details.imageUrls?.length
+    ) || imageSources.find(details =>
+      details?.imageExtractionStatus === "partial" && details.imageUrls?.length
+    ) || null;
+    const imageUrls = selectedImages?.imageUrls || [];
     return {
       fullDescription: rendered.fullDescription || embedded?.fullDescription || null,
       listingTitle: embedded?.listingTitle || rendered.listingTitle || null,
-      primaryImageUrl: preferEmbeddedImages ? embedded?.primaryImageUrl : rendered.primaryImageUrl || embedded?.primaryImageUrl || null,
+      primaryImageUrl: selectedImages?.primaryImageUrl || imageUrls[0] || null,
       imageUrls,
+      imageExtractionStatus: selectedImages?.imageExtractionStatus || "unavailable",
+      imageDiagnostics: rendered.imageDiagnostics || embedded?.imageDiagnostics || null,
       vehicleAttributes: { ...(embedded?.vehicleAttributes || {}), ...(rendered.vehicleAttributes || {}) },
       mileageDetail: embedded?.mileageDetail || rendered.mileageDetail || null,
       transmission: embedded?.transmission || rendered.transmission || null,
@@ -524,6 +720,46 @@
       structuredDetailsFound: Boolean(embedded?.structuredDetailsFound || rendered.structuredDetailsFound),
       extractionSource: `${embedded?.extractionSource || "static-html"}+${rendered.extractionSource}`
     };
+  }
+
+  function resolveListingImages(details, fallback = {}) {
+    const status = ["complete", "partial", "unavailable"].includes(details?.imageExtractionStatus)
+      ? details.imageExtractionStatus
+      : "unavailable";
+    const detailImages = rankImageCandidates(
+      (Array.isArray(details?.imageUrls) ? details.imageUrls : []).map((url, index) => ({
+        url,
+        width: 0,
+        height: 0,
+        mediaId: null,
+        order: index,
+        source: "validated-detail",
+        listingOwned: true,
+        insideListingRoot: true,
+        insideGallery: true,
+        ancestryCategory: "listing-gallery"
+      }))
+    ).imageUrls;
+    if (status === "complete" || status === "partial" && detailImages.length) {
+      return {
+        imageUrl: detailImages[0] || null,
+        imageUrls: detailImages,
+        imageExtractionStatus: status
+      };
+    }
+
+    const fallbackOwned = String(fallback.listingId || "") &&
+      String(fallback.listingId || "") === String(fallback.sourceListingId || "") &&
+      isFacebookImageUrl(fallback.imageUrl) &&
+      new URL(fallback.imageUrl).protocol === "https:";
+    if (fallbackOwned) {
+      return {
+        imageUrl: fallback.imageUrl,
+        imageUrls: [fallback.imageUrl],
+        imageExtractionStatus: "partial"
+      };
+    }
+    return { imageUrl: null, imageUrls: [], imageExtractionStatus: "unavailable" };
   }
 
   function needsRenderedFallback(details) {
@@ -574,36 +810,135 @@
     }).filter(Boolean);
   }
 
-  function captureImageCandidates(listingId, orderOffset = 0) {
-    const root = document.querySelector('[role="main"]') || document.body;
-    if (!root) return [];
+  function semanticAncestryCategory(image, foreignListingId) {
+    if (foreignListingId) return "nearby-listing";
+    if (image.closest?.('nav,[role="navigation"],[role="banner"]')) return "navigation";
+    if (image.closest?.('a[href*="/profile.php"],a[href*="/marketplace/profile"],[aria-label*="seller" i]')) return "seller";
+    const context = image.closest?.('a,[role="article"],section');
+    const text = elementText(context);
+    if (/\b(?:you may also like|recommended|more from this seller|sponsored)\b/i.test(text)) return "recommended";
+    if (/avatar|profile picture|logo|icon|emoji/i.test(String(image.alt || ""))) return "ui";
+    return "listing-gallery";
+  }
+
+  function findActiveListingRoot(listingId) {
+    const dialogs = [...document.querySelectorAll('[role="dialog"]')].filter(isVisible);
+    const exactDialog = dialogs.find(dialog =>
+      dialog.querySelector?.(`a[href*="/marketplace/item/${listingId}"]`)
+    );
+    if (exactDialog) return { root: exactDialog, identity: "active-listing-dialog" };
+    const semanticDialog = dialogs.find(dialog =>
+      /seller['â€™]s description|about this vehicle/i.test(elementText(dialog)) &&
+      dialog.querySelector?.("img")
+    );
+    if (semanticDialog) return { root: semanticDialog, identity: "semantic-listing-dialog" };
+    const main = [...document.querySelectorAll('[role="main"]')].find(isVisible);
+    return main ? { root: main, identity: "marketplace-main" } : null;
+  }
+
+  function findGalleryContext(listingId) {
+    const active = findActiveListingRoot(listingId);
+    if (!active) return null;
+    const eligible = [...active.root.querySelectorAll("img")]
+      .filter(isVisible)
+      .filter(image => {
+        const linkedId = image.closest?.('a[href*="/marketplace/item/"]')?.href?.match(/\/marketplace\/item\/(\d+)/)?.[1];
+        const foreignId = linkedId && linkedId !== listingId ? linkedId : null;
+        return !foreignId && !EXCLUDED_IMAGE_ANCESTRY.has(semanticAncestryCategory(image, null));
+      })
+      .map(image => ({ image, rect: image.getBoundingClientRect() }))
+      .filter(item => item.rect.width >= 240 && item.rect.height >= 160)
+      .sort((left, right) => right.rect.width * right.rect.height - left.rect.width * left.rect.height);
+    const primary = eligible[0]?.image || null;
+    if (!primary) return null;
+
+    let galleryRoot = null;
+    let ancestor = primary.parentElement;
+    const primaryRect = primary.getBoundingClientRect();
+    for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
+      if (!active.root.contains(ancestor)) break;
+      const hasGalleryNext = [...ancestor.querySelectorAll("button[aria-label]")].some(button =>
+        /^(?:next|next photo|next image)/i.test(button.getAttribute("aria-label") || "") &&
+        !button.disabled && button.getAttribute("aria-disabled") !== "true" && isVisible(button) &&
+        (() => {
+          const rect = button.getBoundingClientRect();
+          const centreY = rect.top + rect.height / 2;
+          return rect.left <= primaryRect.right + 120 && rect.right >= primaryRect.left - 120 &&
+            centreY >= primaryRect.top - 60 && centreY <= primaryRect.bottom + 60;
+        })()
+      );
+      if (hasGalleryNext) {
+        galleryRoot = ancestor;
+        break;
+      }
+      if (ancestor === active.root) break;
+    }
+    galleryRoot ||= primary.closest?.('button,[role="group"]') || primary.parentElement || null;
+
+    if (!galleryRoot || !active.root.contains(galleryRoot)) return null;
+    const labels = [...galleryRoot.querySelectorAll("[aria-label]")]
+      .map(element => element.getAttribute("aria-label") || "");
+    const declaredCount = labels.reduce((maximum, label) => {
+      const match = label.match(/(?:photo|image)?\s*\d+\s*(?:of|\/)\s*(\d+)/i);
+      return Math.max(maximum, Number(match?.[1]) || 0);
+    }, 0) || null;
+    return {
+      listingRoot: active.root,
+      galleryRoot,
+      containerIdentity: `${active.identity}:${galleryRoot.getAttribute?.("role") || galleryRoot.tagName?.toLowerCase() || "element"}`,
+      declaredCount
+    };
+  }
+
+  function captureImageCandidates(listingId, orderOffset = 0, context = findGalleryContext(listingId)) {
+    if (!context?.listingRoot || !context.galleryRoot) return { candidates: [], primaryIdentity: null, context: null };
     const output = [];
-    [...root.querySelectorAll("img")].forEach((image, index) => {
+    const galleryImages = [...context.galleryRoot.querySelectorAll("img")].filter(isVisible);
+    const primaryImage = galleryImages
+      .map(image => ({ image, rect: image.getBoundingClientRect() }))
+      .sort((left, right) => right.rect.width * right.rect.height - left.rect.width * left.rect.height)[0]?.image || null;
+
+    [...context.listingRoot.querySelectorAll("img")].forEach((image, index) => {
       if (!isVisible(image)) return;
-      const alt = String(image.alt || "");
-      if (/avatar|profile picture|logo|icon|emoji/i.test(alt)) return;
       const listingLink = image.closest?.('a[href*="/marketplace/item/"]');
       const linkedId = listingLink?.href?.match(/\/marketplace\/item\/(\d+)/)?.[1] || null;
-      if (linkedId && linkedId !== listingId) return;
-      const context = image.closest?.('a,[role="article"]');
-      if (/\bsponsored\b/i.test(elementText(context))) return;
+      const foreignListingId = linkedId && linkedId !== listingId ? linkedId : null;
       const buttonLabel = image.closest?.("button")?.getAttribute?.("aria-label") || "";
       const labelledOrder = Number(buttonLabel.match(/(?:photo|image)\s+(\d+)/i)?.[1]);
       const order = Number.isFinite(labelledOrder) && labelledOrder > 0 ? labelledOrder - 1 : orderOffset + index;
       const rect = image.getBoundingClientRect();
       const naturalWidth = Number(image.naturalWidth) || Math.round(rect.width);
       const naturalHeight = Number(image.naturalHeight) || Math.round(rect.height);
-      const mediaId = image.getAttribute?.("data-media-id") || image.dataset?.mediaId || `rendered-${orderOffset + index}`;
+      const mediaId = image.getAttribute?.("data-media-id") || image.dataset?.mediaId || `rendered:${orderOffset + index}`;
       const style = globalThis.getComputedStyle?.(image);
-      const blurred = /blur/i.test(style?.filter || "");
-      if (blurred) return;
+      const common = {
+        height: naturalHeight,
+        mediaId,
+        order,
+        listingOwned: !foreignListingId,
+        insideListingRoot: true,
+        insideGallery: context.galleryRoot.contains(image),
+        foreignListingId,
+        ancestryCategory: semanticAncestryCategory(image, foreignListingId),
+        thumbnail: naturalWidth > 0 && naturalWidth < 500,
+        isPrimary: image === primaryImage
+      };
+      if (/blur/i.test(style?.filter || "")) {
+        output.push({ ...common, url: image.currentSrc || image.src, width: naturalWidth, listingOwned: false, ancestryCategory: "ui", source: "rendered-blurred" });
+        return;
+      }
       for (const item of parseSrcset(image.getAttribute?.("srcset"))) {
-        output.push({ url: item.url, width: item.width, height: naturalHeight, mediaId, order, source: "rendered-srcset", listingOwned: true, thumbnail: item.width < 500 });
+        output.push({ ...common, url: item.url, width: item.width, source: "rendered-srcset", thumbnail: item.width < 500 });
       }
       const url = image.currentSrc || image.src;
-      if (url) output.push({ url, width: naturalWidth, height: naturalHeight, mediaId, order, source: "rendered-src", listingOwned: true, thumbnail: naturalWidth < 500 });
+      if (url) output.push({ ...common, url, width: naturalWidth, source: "rendered-src" });
     });
-    return output;
+    const primaryUrl = primaryImage?.currentSrc || primaryImage?.src || null;
+    return {
+      candidates: output,
+      primaryIdentity: facebookAssetIdentity(primaryUrl),
+      context
+    };
   }
 
   function captureRenderedSnapshot(listingId, imageCandidates) {
@@ -624,9 +959,39 @@
     };
   }
 
-  function findNextCarouselButton() {
-    const root = document.querySelector('[role="main"]') || document;
-    return [...root.querySelectorAll("button[aria-label]")].find(button =>
+  function nextGalleryIterationState(current = {}, primaryIdentity, declaredCount = null) {
+    const seen = new Set(Array.isArray(current.seen) ? current.seen : []);
+    const firstIdentity = current.firstIdentity || primaryIdentity || null;
+    const wrapped = Boolean(
+      primaryIdentity && firstIdentity && primaryIdentity === firstIdentity && seen.size > 1
+    );
+    const noChangeCount = primaryIdentity && primaryIdentity === current.lastIdentity
+      ? (Number(current.noChangeCount) || 0) + 1
+      : primaryIdentity
+        ? 0
+        : (Number(current.noChangeCount) || 0) + 1;
+    if (primaryIdentity) seen.add(primaryIdentity);
+    const declaredComplete = Number(declaredCount) > 0 && seen.size >= Math.min(Number(declaredCount), LIMITS.imageCount);
+    return {
+      firstIdentity,
+      lastIdentity: primaryIdentity || current.lastIdentity || null,
+      seen: [...seen],
+      noChangeCount,
+      wrapped,
+      stop: wrapped || noChangeCount >= 2 || declaredComplete,
+      stopReason: wrapped
+        ? "wrapped gallery repeat"
+        : noChangeCount >= 2
+          ? "carousel no change"
+          : declaredComplete
+            ? "declared gallery count reached"
+            : null
+    };
+  }
+
+  function findNextCarouselButton(galleryRoot) {
+    if (!galleryRoot) return null;
+    return [...galleryRoot.querySelectorAll("button[aria-label]")].find(button =>
       /^(?:next|next photo|next image)/i.test(button.getAttribute("aria-label") || "") &&
       !button.disabled &&
       button.getAttribute("aria-disabled") !== "true" &&
@@ -638,7 +1003,7 @@
     return new Promise(resolve => setTimeout(resolve, milliseconds));
   }
 
-  async function collectRenderedListingDetails(listingId) {
+  async function collectRenderedListingDetails(listingId, options = {}) {
     const currentId = location.pathname.match(/\/marketplace\/item\/(\d+)/)?.[1] || null;
     if (!listingId || currentId !== listingId) throw new Error("Rendered listing ID did not match the requested listing.");
 
@@ -648,25 +1013,55 @@
     }
 
     const allImages = [];
-    const seenPrimaryUrls = new Set();
+    let iterationState = {};
+    let galleryContainerIdentity = null;
+    let declaredCount = null;
     for (let step = 0; step < LIMITS.imageCount; step += 1) {
-      const current = captureImageCandidates(listingId, step * 1000);
-      allImages.push(...current);
-      const primary = rankImageCandidates(current).primaryImageUrl;
-      if (primary && seenPrimaryUrls.has(primary)) break;
-      if (primary) seenPrimaryUrls.add(primary);
-      const next = findNextCarouselButton();
+      const captured = captureImageCandidates(listingId, step * 1000);
+      if (!captured.context) break;
+      galleryContainerIdentity = captured.context.containerIdentity;
+      declaredCount = captured.context.declaredCount;
+      const nextState = nextGalleryIterationState(iterationState, captured.primaryIdentity, declaredCount);
+      if (nextState.wrapped) {
+        iterationState = nextState;
+        break;
+      }
+      allImages.push(...captured.candidates);
+      iterationState = nextState;
+      if (nextState.stop) break;
+      const next = findNextCarouselButton(captured.context.galleryRoot);
       if (!next) break;
       next.click();
       await delay(250);
     }
 
-    let snapshot = captureRenderedSnapshot(listingId, allImages);
+    const rankedImages = rankImageCandidates(allImages);
+    const incompleteDeclaredGallery = Number(declaredCount) > 0 &&
+      iterationState.seen?.length < Math.min(Number(declaredCount), LIMITS.imageCount);
+    const imageExtractionStatus = galleryContainerIdentity && rankedImages.imageUrls.length
+      ? incompleteDeclaredGallery || iterationState.stopReason === "carousel no change"
+        ? "partial"
+        : "complete"
+      : "unavailable";
+    let snapshot = {
+      ...captureRenderedSnapshot(listingId, allImages),
+      imageExtractionStatus,
+      includeImageDiagnostics: options.debug === true,
+      galleryDiagnostics: {
+        extractionSource: "rendered-semantic-dom",
+        galleryContainerIdentity,
+        declaredCount,
+        wrapped: Boolean(iterationState.wrapped),
+        noChangeCount: Number(iterationState.noChangeCount) || 0,
+        stopReason: iterationState.stopReason || null,
+        finalImageCount: rankedImages.imageUrls.length
+      }
+    };
     if (!snapshot.descriptionLines.length || !snapshot.aboutLines.length) {
       const about = findHeading(["About this vehicle"]);
       (about || document.documentElement).scrollIntoView?.({ block: "center" });
       await delay(500);
-      snapshot = captureRenderedSnapshot(listingId, allImages);
+      snapshot = { ...snapshot, ...captureRenderedSnapshot(listingId, allImages) };
     }
     return extractRenderedSnapshotDetails(snapshot);
   }
@@ -676,10 +1071,14 @@
     collectRenderedListingDetails,
     extractListingDetails,
     extractRenderedSnapshotDetails,
+    facebookAssetIdentity,
+    filterOwnedImageCandidates,
     isFacebookImageUrl,
     mergeListingDetails,
     needsRenderedFallback,
+    nextGalleryIterationState,
     parseMileageDetail,
-    rankImageCandidates
+    rankImageCandidates,
+    resolveListingImages
   };
 });

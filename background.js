@@ -51,14 +51,15 @@ function waitForTabComplete(tabId) {
   });
 }
 
-async function requestRenderedDetails(tabId, listingId, runToken) {
+async function requestRenderedDetails(tabId, listingId, runToken, debug = false) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     assertInspectionActive(runToken);
     try {
       const response = await chrome.tabs.sendMessage(tabId, {
         type: "EXTRACT_RENDERED_LISTING_DETAILS",
-        listingId
+        listingId,
+        debug
       });
       if (!response?.ok) throw new Error(response?.error || "Rendered extractor returned no result.");
       return response.result;
@@ -77,7 +78,7 @@ function assertInspectionActive(runToken) {
   }
 }
 
-async function inspectRenderedListing(url, listingId, runToken) {
+async function inspectRenderedListing(url, listingId, runToken, debug = false) {
   let tabId = null;
   try {
     assertInspectionActive(runToken);
@@ -89,7 +90,7 @@ async function inspectRenderedListing(url, listingId, runToken) {
     await chrome.tabs.update(tabId, { url });
     await waitForTabComplete(tabId);
     assertInspectionActive(runToken);
-    const result = await requestRenderedDetails(tabId, listingId, runToken);
+    const result = await requestRenderedDetails(tabId, listingId, runToken, debug);
     assertInspectionActive(runToken);
     return result;
   } finally {
@@ -123,7 +124,7 @@ function pumpRenderedInspections() {
     const job = pendingRenderedInspections.shift();
     activeRenderedInspections += 1;
     lastRenderedInspectionStartedAt = Date.now();
-    inspectRenderedListing(job.url, job.listingId, job.runToken)
+    inspectRenderedListing(job.url, job.listingId, job.runToken, job.debug)
       .then(job.resolve, job.reject)
       .finally(() => {
         activeRenderedInspections -= 1;
@@ -132,9 +133,9 @@ function pumpRenderedInspections() {
   }
 }
 
-function queueRenderedInspection(url, listingId, runToken) {
+function queueRenderedInspection(url, listingId, runToken, debug = false) {
   return new Promise((resolve, reject) => {
-    pendingRenderedInspections.push({ url, listingId, runToken, resolve, reject });
+    pendingRenderedInspections.push({ url, listingId, runToken, debug, resolve, reject });
     scheduleRenderedPump();
   });
 }
@@ -360,7 +361,7 @@ async function fetchWithTimeout(url, runToken) {
   }
 }
 
-async function inspectListing(url, runToken) {
+async function inspectListing(url, runToken, debug = false) {
   assertInspectionActive(runToken);
   const response = await fetchWithTimeout(url, runToken);
 
@@ -372,14 +373,15 @@ async function inspectListing(url, runToken) {
   const listingId = getListingIdFromUrl(url);
   const staticListingDetails = ListingDetailsExtractor.extractListingDetails(html, {
     listingId,
-    canonicalUrl: response.url || url
+    canonicalUrl: response.url || url,
+    debug
   });
   let renderedListingDetails = null;
   let listingDetails = staticListingDetails;
   if (listingId) {
     try {
       assertInspectionActive(runToken);
-      renderedListingDetails = await queueRenderedInspection(response.url || url, listingId, runToken);
+      renderedListingDetails = await queueRenderedInspection(response.url || url, listingId, runToken, debug);
       listingDetails = ListingDetailsExtractor.mergeListingDetails(staticListingDetails, renderedListingDetails);
     } catch {
       // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
@@ -483,7 +485,7 @@ function pumpQueue() {
     activeRequests += 1;
     lastRequestStartedAt = Date.now();
 
-    inspectListing(job.url, job.runToken)
+    inspectListing(job.url, job.runToken, job.debug)
       .then(result => {
         for (const listener of job.listeners) {
           listener.resolve(result);
@@ -502,7 +504,7 @@ function pumpQueue() {
   }
 }
 
-function queueInspection(url, priority = 0, runToken = null) {
+function queueInspection(url, priority = 0, runToken = null, debug = false) {
   return new Promise((resolve, reject) => {
     if (runToken && cancelledInspectionTokens.has(runToken)) {
       reject(new Error("Listing inspection was cancelled."));
@@ -513,6 +515,7 @@ function queueInspection(url, priority = 0, runToken = null) {
 
     if (existing) {
       existing.listeners.push({ resolve, reject });
+      existing.debug = existing.debug || debug;
 
       if (priority > existing.priority && !existing.started) {
         existing.priority = priority;
@@ -527,6 +530,7 @@ function queueInspection(url, priority = 0, runToken = null) {
       url,
       runToken,
       priority,
+      debug,
       listeners: [{ resolve, reject }],
       started: false
     };
@@ -847,7 +851,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "INSPECT_LISTING" && message.url) {
     return respond(
-      queueInspection(message.url, Number(message.priority) || 0, message.runToken || null)
+      queueInspection(message.url, Number(message.priority) || 0, message.runToken || null, message.debug === true)
     );
   }
 

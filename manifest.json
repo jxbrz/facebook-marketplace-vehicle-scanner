@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Kelmar Vehicle Scanner",
-  "version": "23.0.7",
+  "version": "23.0.8",
   "description": "Scan Facebook Marketplace vehicle listings and securely send results to a private sourcing dashboard.",
   "permissions": [
     "storage",
@@ -33,20 +33,11 @@
         "scanner-runtime.js",
         "scanner-storage.js",
         "vehicle-identity.js",
+        "listing-details-extractor.js",
         "content.js"
       ],
       "css": [
         "styles.css"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://www.facebook.com/marketplace/item/*",
-        "https://facebook.com/marketplace/item/*"
-      ],
-      "js": [
-        "listing-details-extractor.js"
       ],
       "run_at": "document_idle"
     }

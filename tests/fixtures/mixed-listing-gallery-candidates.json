@@ -1,0 +1,31 @@
+{
+  "listingId": "123",
+  "description": "Synthetic active listing DOM: gallery plus seller, recommendation, nearby and navigation ancestry.",
+  "imageCandidates": [
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-1.jpg?oe=one", "width": 1600, "height": 900, "order": 0, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-2.jpg", "width": 1600, "height": 900, "order": 1, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-3.jpg", "width": 1600, "height": 900, "order": 2, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-4.jpg", "width": 1600, "height": 900, "order": 3, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-5.jpg", "width": 1600, "height": 900, "order": 4, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-6.jpg", "width": 1600, "height": 900, "order": 5, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-7.jpg", "width": 1600, "height": 900, "order": 6, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-8.jpg", "width": 1600, "height": 900, "order": 7, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/avatar.jpg", "width": 200, "height": 200, "order": 8, "listingOwned": true, "insideListingRoot": true, "insideGallery": false, "ancestryCategory": "seller" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/recommended.jpg", "width": 1200, "height": 675, "order": 9, "listingOwned": true, "insideListingRoot": true, "insideGallery": false, "ancestryCategory": "recommended" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/nearby.jpg", "width": 1200, "height": 675, "order": 10, "listingOwned": true, "insideListingRoot": true, "insideGallery": false, "ancestryCategory": "nearby-listing" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/facebook-logo.png", "width": 256, "height": 256, "order": 11, "listingOwned": true, "insideListingRoot": true, "insideGallery": false, "ancestryCategory": "navigation" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/other-listing.jpg", "width": 1200, "height": 675, "order": 12, "listingOwned": false, "insideListingRoot": false, "insideGallery": false, "ancestryCategory": "unknown", "foreignListingId": "999" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/recycled-node.jpg", "width": 1200, "height": 675, "order": 13, "listingOwned": false, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/car-1.jpg?oe=wrapped", "width": 1600, "height": 900, "order": 14, "listingOwned": true, "insideListingRoot": true, "insideGallery": true, "ancestryCategory": "listing-gallery" }
+  ],
+  "expectedImageUrls": [
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-1.jpg?oe=one",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-2.jpg",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-3.jpg",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-4.jpg",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-5.jpg",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-6.jpg",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-7.jpg",
+    "https://scontent-lhr8-1.xx.fbcdn.net/car-8.jpg"
+  ]
+}

@@ -7,6 +7,7 @@ function pendingPayload(id, overrides = {}) {
   return {
     externalListingId: id,
     sourceUrl: `https://www.facebook.com/marketplace/item/${id}`,
+    imageExtractionStatus: "complete",
     imageUrl: "https://scontent.example/first.jpg?tracking=one",
     imageUrls: [
       "https://scontent.example/first.jpg?tracking=one",
@@ -123,6 +124,14 @@ test("pending images remain HTTPS, ordered, deduplicated, and capped", () => {
   assert.equal(payload.imageUrls[19], "https://scontent.example/19.jpg");
   assert.equal(payload.imageUrl, payload.imageUrls[0]);
   assert.equal(payload.imageUrls.some(url => /^(?:blob:|data:|http:)/.test(url)), false);
+});
+
+test("legacy pending payloads cannot reintroduce an untrusted old gallery", () => {
+  const legacy = pendingPayload("pending", { imageExtractionStatus: undefined });
+  const payload = ScannerStorage.sanitisePendingUpload(legacy);
+  assert.equal(payload.imageExtractionStatus, "unavailable");
+  assert.equal(payload.imageUrl, null);
+  assert.deepEqual(payload.imageUrls, []);
 });
 
 test("compact state keeps pending payloads but drops full successful results", () => {

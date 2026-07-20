@@ -84,6 +84,15 @@ test("performance diagnostics are opt-in and expose aggregates without listing t
   assert.doesNotMatch(source, /recordListing\([^\n]*token/i);
 });
 
+test("card thumbnail fallback is tied to the exact canonical listing anchor", () => {
+  const extraction = functionSource("extractCardMetadata", "function getViewportPriority");
+  assert.match(extraction, /normaliseListingUrl\(anchor\.href\)\?\.id === listingId/);
+  assert.match(extraction, /imageOwnerListingId: imageUrl \? listingId : null/);
+  const payload = functionSource("buildRemoteListing", "async function postJson");
+  assert.match(payload, /sourceListingId: metadata\.imageOwnerListingId/);
+  assert.doesNotMatch(payload, /sourceListingId: entry\.listingId/);
+});
+
 test("Pause cancels run-scoped activity without finalising and Resume uses a fresh token", () => {
   const pause = functionSource("pauseScanByUser", "async function resumeInterruptedScan");
   assert.match(pause, /transition\(lifecycleState, "PAUSE"\)/);
