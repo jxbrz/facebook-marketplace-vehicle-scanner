@@ -1,147 +1,37 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Kelmar Marketplace Vehicle Scanner</title>
-  <link rel="stylesheet" href="popup.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kelmar Vehicle Scanner</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-  <main class="app-shell">
-    <header class="app-header">
-      <img class="brand-logo" src="icons/kelmar-logo.png" width="110" height="50" alt="Kelmar Vehicles Ltd">
-      <div class="header-copy">
-        <h1>Marketplace Vehicle Scanner</h1>
-        <div class="status-line"><span id="connectionDot" class="connection-dot" aria-hidden="true"></span><span id="connectionStatus">Checking dashboard…</span><span id="version" class="version"></span></div>
-      </div>
-      <button id="openDashboard" class="icon-button" type="button" title="Open sourcing dashboard" aria-label="Open sourcing dashboard">↗</button>
+  <main class="cockpit">
+    <header>
+      <img src="icons/kelmar-logo.png" width="96" height="44" alt="Kelmar Vehicles Ltd">
+      <div><h1>Vehicle Scanner</h1><p class="connection"><span id="connectionDot" aria-hidden="true"></span><span id="connectionStatus">Checking dashboard…</span><span id="version"></span></p></div>
+      <button id="openDashboard" class="icon" type="button" aria-label="Open sourcing dashboard" title="Open sourcing dashboard">↗</button>
     </header>
 
     <div id="warnings" class="warnings" aria-live="polite"></div>
 
-    <section class="saved-search-card" aria-labelledby="savedSearchHeading">
-      <div class="section-title-row"><div><p class="eyebrow">Dashboard source</p><h2 id="savedSearchHeading">Saved search</h2></div><button id="refreshSearches" class="quiet-button" type="button">Refresh</button></div>
-      <label for="savedSearch">Active search</label>
-      <select id="savedSearch"><option value="">Local filters (no saved search)</option></select>
-      <p id="savedSearchHelp" class="helper">Dashboard filters load here. Changes below apply to the next local scan only.</p>
+    <section class="source-card" aria-labelledby="sourceHeading">
+      <div class="title-row"><div><p class="eyebrow">Filter source</p><h2 id="sourceHeading">Saved search</h2></div><button id="refreshSearches" class="quiet" type="button">Refresh</button></div>
+      <label class="sr-only" for="savedSearch">Active filter source</label><select id="savedSearch"><option value="">Local filter draft</option></select>
+      <p id="sourceStatus" class="helper">Loading active filters…</p>
+      <details class="summary"><summary><span id="summaryHeadline">View filter summary</span></summary><div id="filterSummary"></div></details>
+      <button id="openSettings" class="settings-button" type="button">Open full settings</button>
     </section>
 
-    <section class="progress-card" aria-label="Live scan progress">
-      <div><strong id="discovered">0</strong><span>Discovered</span></div>
-      <div><strong id="queued">0</strong><span>Queued</span></div>
-      <div><strong id="inspecting">0</strong><span>Inspecting</span></div>
-      <div><strong id="matched">0</strong><span>Matched</span></div>
-      <div><strong id="rejected">0</strong><span>Rejected</span></div>
-      <div><strong id="unresolved">0</strong><span>Unresolved</span></div>
-      <div><strong id="pendingUpload">0</strong><span>To upload</span></div>
-      <div><strong id="uploaded">0</strong><span>Uploaded</span></div>
+    <section class="counters" aria-label="Live scan progress">
+      <div><strong id="discovered">0</strong><span>Found</span></div><div><strong id="queued">0</strong><span>Queued</span></div><div><strong id="inspecting">0</strong><span>Checking</span></div><div><strong id="matched">0</strong><span>Matched</span></div>
+      <div><strong id="rejected">0</strong><span>Rejected</span></div><div><strong id="unresolved">0</strong><span>Unresolved</span></div><div><strong id="pendingUpload">0</strong><span>To upload</span></div><div><strong id="uploaded">0</strong><span>Uploaded</span></div>
     </section>
 
-    <div class="scroll-content">
-      <details open>
-        <summary>Vehicle</summary>
-        <div class="section-body">
-          <label for="makeSearch">Makes</label>
-          <input id="makeSearch" type="search" placeholder="Search makes" autocomplete="off">
-          <div id="makeOptions" class="choice-grid" role="group" aria-label="Included makes"></div>
-          <label for="modelSearch">Models</label>
-          <input id="modelSearch" type="search" placeholder="Search selected-make models" autocomplete="off">
-          <div id="modelOptions" class="choice-grid model-grid" role="group" aria-label="Included models"></div>
-          <p id="modelHelp" class="helper">Choose one or more makes to enable their models. Any model is used when none are selected.</p>
-          <div class="two-column">
-            <label>Minimum year<input id="minYear" type="number" min="1886" max="2100" placeholder="Any"></label>
-            <label>Maximum year<input id="maxYear" type="number" min="1886" max="2100" placeholder="Any"></label>
-          </div>
-        </div>
-      </details>
+    <details id="reasonSection" class="reason-card" hidden><summary>Recent rejection reasons</summary><ol id="reasonCounts"></ol></details>
+    <p id="status" class="run-status" aria-live="polite">Ready.</p>
 
-      <details open>
-        <summary>Price and mileage</summary>
-        <div class="section-body two-column">
-          <label>Minimum price (£)<input id="minPrice" type="number" min="0" step="100" placeholder="Any"></label>
-          <label>Maximum price (£)<input id="maxPrice" type="number" min="0" step="100" placeholder="Any"></label>
-          <label>Minimum mileage<input id="minMileage" type="number" min="0" step="1000" placeholder="Any"></label>
-          <label>Maximum mileage<input id="maxMileage" type="number" min="0" step="1000" placeholder="Any"></label>
-        </div>
-      </details>
-
-      <details>
-        <summary>Specification</summary>
-        <div class="section-body specification-grid">
-          <fieldset><legend>Transmission</legend><label>Include<select id="transmissionInclude" multiple size="3"><option value="manual">Manual</option><option value="automatic">Automatic</option><option value="semiautomatic">Semi-automatic</option></select></label><label>Exclude<select id="transmissionExclude" multiple size="3"><option value="manual">Manual</option><option value="automatic">Automatic</option><option value="semiautomatic">Semi-automatic</option></select></label></fieldset>
-          <fieldset><legend>Fuel type</legend><label>Include<select id="fuelInclude" multiple size="4"><option value="petrol">Petrol</option><option value="diesel">Diesel</option><option value="hybrid">Hybrid</option><option value="plug-in hybrid">Plug-in hybrid</option><option value="electric">Electric</option><option value="lpg">LPG</option><option value="other">Other</option></select></label><label>Exclude<select id="fuelExclude" multiple size="4"><option value="petrol">Petrol</option><option value="diesel">Diesel</option><option value="hybrid">Hybrid</option><option value="plug-in hybrid">Plug-in hybrid</option><option value="electric">Electric</option><option value="lpg">LPG</option><option value="other">Other</option></select></label></fieldset>
-          <fieldset><legend>Colour</legend><label>Include<select id="colourInclude" multiple size="4"></select></label><label>Exclude<select id="colourExclude" multiple size="4"></select></label></fieldset>
-          <fieldset><legend>Body type</legend><label>Include<select id="bodyInclude" multiple size="4"></select></label><label>Exclude<select id="bodyExclude" multiple size="4"></select></label></fieldset>
-        </div>
-      </details>
-
-      <details>
-        <summary>Condition and category</summary>
-        <div class="section-body">
-          <fieldset><legend>Category mode</legend><div class="radio-grid"><label><input name="categoryMode" type="radio" value="any">Any status</label><label><input name="categoryMode" type="radio" value="clean_only">Clean only</label><label><input name="categoryMode" type="radio" value="category_only">Category vehicles only</label><label><input name="categoryMode" type="radio" value="selected">Selected statuses</label></div></fieldset>
-          <fieldset id="categoryStatuses"><legend>Selected statuses</legend><div class="choice-grid"><label><input type="checkbox" value="clean">Clean</label><label><input type="checkbox" value="cat_s">Cat S</label><label><input type="checkbox" value="cat_n">Cat N</label><label><input type="checkbox" value="cat_c">Cat C</label><label><input type="checkbox" value="cat_d">Cat D</label><label><input type="checkbox" value="other">Other</label><label><input type="checkbox" value="unknown">Unknown</label></div></fieldset>
-          <label class="check-row"><span>Include vehicles described as repaired</span><input id="includeRepairedVehicles" type="checkbox"></label>
-          <p class="helper">No category wording means unknown, not clean. “Repaired” alone does not prove an insurance category.</p>
-        </div>
-      </details>
-
-      <details>
-        <summary>Keywords</summary>
-        <div class="section-body two-column">
-          <label>Required keywords<textarea id="requiredKeywords" rows="4" placeholder="full service history"></textarea></label>
-          <label>Excluded keywords<textarea id="excludedKeywords" rows="4" placeholder="spares or repair"></textarea></label>
-        </div>
-      </details>
-
-      <details>
-        <summary>Unknown-value handling</summary>
-        <div id="unknownPolicies" class="section-body two-column"></div>
-      </details>
-
-      <details>
-        <summary>Scan behaviour</summary>
-        <div class="section-body">
-          <div class="three-column">
-            <label>Target matches<input id="targetMatches" type="number" min="1" max="250"></label>
-            <label>Max inspected<input id="maximumProcessed" type="number" min="1" max="500"></label>
-            <label>Minutes<input id="maximumDurationMinutes" type="number" min="0.5" max="60" step="0.5"></label>
-          </div>
-          <label class="check-row"><span>Automatically scroll and load more listings</span><input id="autoLoadEnabled" type="checkbox"></label>
-          <label class="check-row"><span>Open dashboard results when finished</span><input id="autoOpenResults" type="checkbox"></label>
-          <p class="helper">When automatic loading is off, only listings already mounted on the page are scanned.</p>
-        </div>
-      </details>
-
-      <details>
-        <summary>Dashboard connection</summary>
-        <div class="section-body">
-          <label>Dashboard URL<input id="dashboardUrl" type="url" placeholder="https://sourcing.kelmarvehiclesltd.co.uk"></label>
-          <label>Extension API token<input id="extensionApiToken" type="password" autocomplete="off" placeholder="Paste extension token"></label>
-          <div class="origin-box"><span>Allowed extension origin</span><code id="extensionOrigin"></code></div>
-        </div>
-      </details>
-
-      <section id="reasonSection" class="reason-card" hidden>
-        <h2>Recent rejection and unresolved reasons</h2>
-        <ol id="reasonCounts"></ol>
-      </section>
-
-      <section id="recoveryActions" class="recovery-card" hidden>
-        <h2 id="recoveryTitle">Interrupted scan found</h2>
-        <p id="recoveryText" class="helper"></p>
-        <div class="button-row"><button id="resumeScan" class="primary" type="button">Resume</button><button id="discardScan" type="button">Discard</button></div>
-      </section>
-
-      <div class="utility-actions"><button id="openResults" type="button">Open results</button><button id="retrySync" type="button">Retry upload</button><button id="clearState" type="button">Clear local run</button></div>
-    </div>
-
-    <footer class="action-dock">
-      <p id="status" aria-live="polite">Ready.</p>
-      <div class="primary-actions"><button id="startScan" class="primary" type="button">Start</button><button id="pauseScan" type="button">Pause</button><button id="stopScan" class="danger" type="button">Stop</button></div>
-    </footer>
+    <section class="actions" aria-label="Scan controls">
+      <button id="startScan" class="primary" type="button">Start</button><button id="pauseScan" type="button">Pause</button><button id="resumeScan" type="button">Resume</button><button id="stopScan" class="danger" type="button">Stop</button>
+    </section>
+    <div class="utility"><button id="openResults" type="button">Open results</button><button id="retrySync" type="button">Retry upload</button><button id="discardScan" type="button">Discard interrupted run</button></div>
   </main>
-  <script src="vehicle-catalogue.js"></script>
-  <script src="filter-domain.js"></script>
-  <script src="popup.js"></script>
+  <script src="vehicle-catalogue.js"></script><script src="filter-domain.js"></script><script src="settings-storage.js"></script><script src="popup.js"></script>
 </body>
 </html>

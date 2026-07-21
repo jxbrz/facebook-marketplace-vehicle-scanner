@@ -15,6 +15,7 @@ const expectedHostPermissions = [
 ];
 
 assert.equal(manifest.manifest_version, 3);
+assert.equal(manifest.options_page, "settings.html");
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
 assert.equal(packageJson.version, manifest.version);
 assert.match(

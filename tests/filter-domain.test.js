@@ -109,6 +109,17 @@ test("evaluates specification inclusion and exclusion with explicit reasons", ()
   assert.match(evaluate(config, { bodyType: "SUV" }).rejectionReasons.join(" "), /Body type suv is excluded/);
 });
 
+test("normalizes multiple three-state values and applies explicit Unknown choices", () => {
+  const config = Filters.normaliseFilterConfig({ specification: {
+    transmissions: { include: ["manual", "automatic", "unknown"], exclude: ["manual", "other"] },
+    fuelTypes: { exclude: ["unknown"] }
+  } });
+  assert.deepEqual(config.specification.transmissions.include, ["manual", "automatic", "unknown"]);
+  assert.deepEqual(config.specification.transmissions.exclude, ["other"]);
+  assert.equal(Filters.evaluateFilters({ ...facts(), transmission: "unknown" }, config).decision, "match");
+  assert.equal(Filters.evaluateFilters({ ...facts(), fuelType: "unknown" }, config).decision, "reject");
+});
+
 test("required and excluded keywords are combined deterministically", () => {
   const config = { category: { mode: "any" }, text: { requiredKeywords: ["service history"], excludedKeywords: ["spares or repair"] } };
   assert.equal(evaluate(config).decision, "match");

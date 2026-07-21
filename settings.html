@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Kelmar Scanner Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="icons/kelmar-logo.png" width="110" height="50" alt="Kelmar Vehicles Ltd"><div><p class="eyebrow">Marketplace sourcing</p><h1>Scanner settings</h1><p id="connectionStatus" class="status-line">Checking dashboard…</p></div></div>
+    <div class="header-actions"><span id="version" class="version"></span><button id="openDashboard" type="button">Open dashboard</button><button id="returnMarketplace" type="button">Return to Marketplace</button><button id="closeSettings" type="button">Close</button></div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar" aria-label="Settings sections">
+      <a href="#source">Saved search</a><a href="#vehicle">Vehicle</a><a href="#specification">Specification</a><a href="#condition">Condition</a><a href="#keywords">Keywords</a><a href="#unknown">Unknown values</a><a href="#behaviour">Scan behaviour</a><a href="#connection">Connection</a>
+      <p>Return to the popup to start, pause, resume or stop a scan.</p>
+    </aside>
+
+    <div class="content">
+      <section id="source" class="panel">
+        <div class="section-heading"><div><p class="eyebrow">Active source</p><h2>Saved search</h2></div><button id="refreshSearches" type="button">Refresh</button></div>
+        <label>Filter source<select id="savedSearch"><option value="">Local filter draft</option></select></label>
+        <p id="sourceHelp" class="helper">Local filters apply to the next scan only.</p>
+        <div id="sourceActions" class="button-row"><button id="useLocalDraft" type="button">Use local draft</button><button id="copyToLocal" type="button">Copy active search to local draft</button></div>
+        <div id="filterSummary" class="summary-grid" aria-label="Active filter summary"></div>
+      </section>
+
+      <fieldset id="filterEditor" class="editor-shell">
+        <legend class="sr-only">Filter editor</legend>
+        <section id="vehicle" class="panel">
+          <div class="section-heading"><div><p class="eyebrow">Identity and limits</p><h2>Vehicle</h2></div></div>
+          <div class="two-column">
+            <div><label>Search makes<input id="makeSearch" type="search" autocomplete="off" placeholder="Search makes"></label><div id="makeOptions" class="choice-grid" role="group" aria-label="Included makes"></div><p class="helper">No selection means any make.</p></div>
+            <div><label>Search models<input id="modelSearch" type="search" autocomplete="off" placeholder="Search selected-make models"></label><div id="modelOptions" class="choice-grid" role="group" aria-label="Included models"></div><p id="modelHelp" class="helper"></p></div>
+          </div>
+          <div class="four-column ranges"><label>Minimum year<input id="minYear" type="number" min="1886" max="2100" placeholder="Any"></label><label>Maximum year<input id="maxYear" type="number" min="1886" max="2100" placeholder="Any"></label><label>Minimum price (£)<input id="minPrice" type="number" min="0" placeholder="Any"></label><label>Maximum price (£)<input id="maxPrice" type="number" min="0" placeholder="Any"></label><label>Minimum mileage<input id="minMileage" type="number" min="0" placeholder="Any"></label><label>Maximum mileage<input id="maxMileage" type="number" min="0" placeholder="Any"></label></div>
+        </section>
+
+        <section id="specification" class="panel"><div class="section-heading"><div><p class="eyebrow">Per-value rules</p><h2>Specification</h2></div></div><p class="helper lead">Set every value independently to Ignore, Include or Exclude. A value can never be both included and excluded.</p><div id="specificationGroups" class="spec-grid"></div></section>
+
+        <section id="condition" class="panel"><div class="section-heading"><div><p class="eyebrow">Disclosure handling</p><h2>Condition and category</h2></div></div><fieldset><legend>Category mode</legend><div id="categoryModes" class="radio-grid"></div></fieldset><fieldset><legend>Selected statuses</legend><div id="categoryStatuses" class="checkbox-grid"></div></fieldset><label class="check-row"><input id="includeRepairedVehicles" type="checkbox"><span>Include adverts described as repaired</span></label><p class="helper">Missing category evidence remains Unknown; it is never assumed clean.</p></section>
+
+        <section id="keywords" class="panel"><div class="section-heading"><div><p class="eyebrow">Advert wording</p><h2>Keywords</h2></div></div><div class="two-column"><label>Required, one per line<textarea id="requiredKeywords" rows="5"></textarea></label><label>Excluded, one per line<textarea id="excludedKeywords" rows="5"></textarea></label></div></section>
+
+        <section id="unknown" class="panel"><div class="section-heading"><div><p class="eyebrow">Missing evidence</p><h2>Unknown-value handling</h2></div></div><div id="unknownPolicies" class="three-column"></div></section>
+
+        <section id="behaviour" class="panel"><div class="section-heading"><div><p class="eyebrow">Bounded run</p><h2>Scan behaviour</h2></div></div><div class="three-column"><label>Target matches<input id="targetMatches" type="number" min="1" max="250"></label><label>Maximum inspected<input id="maximumProcessed" type="number" min="1" max="500"></label><label>Maximum minutes<input id="maximumDurationMinutes" type="number" min="0.5" max="60" step="0.5"></label></div><div class="two-column"><label class="check-row"><input id="autoLoadEnabled" type="checkbox"><span>Automatically load more listings</span></label><label class="check-row"><input id="autoOpenResults" type="checkbox"><span>Open results when complete</span></label></div></section>
+      </fieldset>
+
+      <section id="connection" class="panel"><div class="section-heading"><div><p class="eyebrow">Private dashboard</p><h2>Connection</h2></div></div><div class="two-column"><label>Dashboard URL<input id="dashboardUrl" type="url"></label><label>Extension API token<input id="extensionApiToken" type="password" autocomplete="off"></label></div><p class="helper">Allowed extension origin: <code id="extensionOrigin"></code></p></section>
+    </div>
+  </main>
+
+  <footer class="savebar"><p id="feedback" aria-live="polite">No unsaved changes.</p><div><button id="resetChanges" type="button">Reset unsaved changes</button><button id="saveSettings" class="primary" type="button">Save local settings</button></div></footer>
+  <script src="vehicle-catalogue.js"></script><script src="filter-domain.js"></script><script src="settings-storage.js"></script><script src="settings.js"></script>
+</body>
+</html>

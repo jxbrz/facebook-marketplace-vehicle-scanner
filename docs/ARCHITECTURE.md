@@ -23,7 +23,9 @@ The hosted Next.js application authenticates extension requests, validates struc
 - `listing-facts.js`: canonical facts normalizer shared by card, static-detail, and rendered-detail paths.
 - `filter-domain.js`: schema-v2 normalization, validation, fingerprinting, unknown policies, and the sole `match | reject | unresolved` evaluator.
 - `payload-normalizer.js`: pure final upload normalization and validation.
-- `popup.*`: local configuration and lifecycle controls.
+- `settings.*`: full local configuration workspace with read-only dashboard saved-search selection.
+- `settings-storage.js`: shared normalized settings and saved-search storage boundary used by settings and popup.
+- `popup.*`: compact source, summary, progress, warning, and lifecycle cockpit.
 - `styles.css`: the scanner status panel only; no native Facebook result hiding, dimming, badges, or card decoration.
 
 ## Identity and persistence

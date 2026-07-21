@@ -10,6 +10,12 @@
   const UNKNOWN_POLICIES = ["inspect_then_reject", "include_with_warning", "exclude", "ignore_filter_for_unknown"];
   const CATEGORY_STATUSES = ["clean", "cat_s", "cat_n", "cat_c", "cat_d", "other", "unknown"];
   const CATEGORY_MODES = ["any", "clean_only", "category_only", "selected"];
+  const SPECIFICATION_OPTIONS = {
+    transmissions: ["manual", "automatic", "semiautomatic", "other", "unknown"],
+    fuelTypes: ["petrol", "diesel", "hybrid", "plug-in hybrid", "electric", "lpg", "other", "unknown"],
+    colours: ["black", "white", "grey", "silver", "blue", "red", "green", "yellow", "orange", "brown", "beige", "gold", "purple", "bronze", "other", "unknown"],
+    bodyTypes: ["hatchback", "saloon", "estate", "suv", "coupe", "convertible", "mpv", "van", "pickup", "other", "unknown"]
+  };
   const DEFAULT_UNKNOWN_POLICIES = {
     price: "inspect_then_reject", mileage: "inspect_then_reject", year: "inspect_then_reject",
     makeModel: "inspect_then_reject", categoryStatus: "inspect_then_reject",
@@ -45,6 +51,33 @@
     const include = list(source.include || value).filter(item => allowed.includes(item));
     const exclude = list(source.exclude).filter(item => allowed.includes(item) && !include.includes(item));
     return { mode: include.length || exclude.length ? "selected" : "any", include, exclude };
+  }
+
+  function selectionState(selectionConfig, value) {
+    if (selectionConfig.include.includes(value)) return "include";
+    if (selectionConfig.exclude.includes(value)) return "exclude";
+    return "ignore";
+  }
+
+  function setSelectionState(selectionConfig, value, state) {
+    const include = selectionConfig.include.filter(item => item !== value);
+    const exclude = selectionConfig.exclude.filter(item => item !== value);
+    if (state === "include") include.push(value);
+    if (state === "exclude") exclude.push(value);
+    return { mode: include.length || exclude.length ? "selected" : "any", include, exclude };
+  }
+
+  function optionLabel(value) {
+    if (value === "semiautomatic") return "Semi-automatic";
+    if (value === "suv" || value === "lpg") return value.toUpperCase();
+    return String(value).replace(/^./, character => character.toUpperCase());
+  }
+
+  function selectionSummary(selectionConfig) {
+    const parts = [];
+    if (selectionConfig.include.length) parts.push(`Include ${selectionConfig.include.map(optionLabel).join(", ")}`);
+    if (selectionConfig.exclude.length) parts.push(`Exclude ${selectionConfig.exclude.map(optionLabel).join(", ")}`);
+    return parts.join(" · ") || "Any";
   }
 
   function policy(value, fallback) {
@@ -85,10 +118,10 @@
         maxMileage: integer(priceMileage.maxMileage ?? source.maxMileage, 0, 1_000_000)
       },
       specification: {
-        transmissions: selection(specification.transmissions ?? source.transmissions, ["manual", "automatic", "semiautomatic"]),
-        fuelTypes: selection(specification.fuelTypes ?? source.fuelTypes, ["petrol", "diesel", "hybrid", "plug-in hybrid", "electric", "lpg", "other"]),
-        colours: selection(specification.colours ?? source.colours, ["black", "white", "silver", "grey", "blue", "red", "green", "yellow", "orange", "brown", "beige", "purple", "gold", "bronze", "other"]),
-        bodyTypes: selection(specification.bodyTypes ?? source.bodyTypes, ["hatchback", "saloon", "estate", "suv", "coupe", "convertible", "mpv", "pickup", "van", "other"])
+        transmissions: selection(specification.transmissions ?? source.transmissions, SPECIFICATION_OPTIONS.transmissions),
+        fuelTypes: selection(specification.fuelTypes ?? source.fuelTypes, SPECIFICATION_OPTIONS.fuelTypes),
+        colours: selection(specification.colours ?? source.colours, SPECIFICATION_OPTIONS.colours),
+        bodyTypes: selection(specification.bodyTypes ?? source.bodyTypes, SPECIFICATION_OPTIONS.bodyTypes)
       },
       category: {
         mode: categoryMode,
@@ -203,7 +236,11 @@
       const value = facts[field];
       const active = selectionConfig.include.length > 0 || selectionConfig.exclude.length > 0;
       evaluatedValues[field] = value;
-      if (value === "unknown" || value === null || value === undefined) return unknown(field, policyName, active);
+      if (value === "unknown" || value === null || value === undefined) {
+        if (selectionConfig.exclude.includes("unknown")) return void rejectionReasons.push(`${LABELS[field]} is unknown and excluded`);
+        if (selectionConfig.include.includes("unknown")) return;
+        return unknown(field, policyName, active);
+      }
       if (selectionConfig.include.length && !selectionConfig.include.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is not selected`);
       if (selectionConfig.exclude.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is excluded`);
     }
@@ -250,8 +287,31 @@
     return JSON.stringify(normaliseFilterConfig(value));
   }
 
+  function filterSummary(value) {
+    const config = normaliseFilterConfig(value);
+    const range = (minimum, maximum, prefix = "", suffix = "") => minimum === null && maximum === null
+      ? "Any"
+      : `${minimum === null ? "Any" : prefix + formatNumber(minimum) + suffix} – ${maximum === null ? "Any" : prefix + formatNumber(maximum) + suffix}`;
+    const makes = config.vehicle.makes.length ? config.vehicle.makes.join(", ") : "Any make";
+    const models = config.vehicle.models.length ? config.vehicle.models.join(", ") : "Any model";
+    const category = config.category.mode === "selected"
+      ? config.category.statuses.map(optionLabel).join(", ") || "No statuses"
+      : config.category.mode.replaceAll("_", " ").replace(/^./, character => character.toUpperCase());
+    return [
+      { label: "Vehicle", value: `${makes} · ${models} · ${range(config.vehicle.minYear, config.vehicle.maxYear)}` },
+      { label: "Price / mileage", value: `${range(config.priceMileage.minPrice, config.priceMileage.maxPrice, "£")} · ${range(config.priceMileage.minMileage, config.priceMileage.maxMileage, "", " mi")}` },
+      { label: "Transmission", value: selectionSummary(config.specification.transmissions) },
+      { label: "Fuel", value: selectionSummary(config.specification.fuelTypes) },
+      { label: "Colour", value: selectionSummary(config.specification.colours) },
+      { label: "Body", value: selectionSummary(config.specification.bodyTypes) },
+      { label: "Category", value: category },
+      { label: "Scan", value: `${config.scan.targetMatches} matches · ${config.scan.maximumProcessed} max · ${Math.round(config.scan.maximumDurationSeconds / 60)} min` }
+    ];
+  }
+
   return {
-    CATEGORY_MODES, CATEGORY_STATUSES, DEFAULT_UNKNOWN_POLICIES, FILTER_SCHEMA_VERSION, UNKNOWN_POLICIES,
-    evaluateFilters, filterFingerprint, normaliseFilterConfig, validateFilterConfig
+    CATEGORY_MODES, CATEGORY_STATUSES, DEFAULT_UNKNOWN_POLICIES, FILTER_SCHEMA_VERSION, SPECIFICATION_OPTIONS, UNKNOWN_POLICIES,
+    evaluateFilters, filterFingerprint, filterSummary, normaliseFilterConfig, optionLabel, selectionState,
+    selectionSummary, setSelectionState, validateFilterConfig
   };
 });

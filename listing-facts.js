@@ -58,6 +58,7 @@
     if (/semi automatic|semi auto|semiautomatic|automatic manual|dsg/.test(raw)) return "semiautomatic";
     if (/automatic|auto|cvt/.test(raw)) return "automatic";
     if (/manual/.test(raw)) return "manual";
+    if (raw === "other") return "other";
     return "unknown";
   }
 

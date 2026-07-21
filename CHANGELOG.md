@@ -1,5 +1,11 @@
 # Changelog
 
+## 23.2.0 - 2026-07-21
+
+- Added a responsive full-tab settings workspace and reduced the popup to saved-search selection, filter summary, scan progress, warnings, and lifecycle controls.
+- Replaced specification multi-selects with explicit per-value Ignore, Include, and Exclude controls, including Other and Unknown choices.
+- Kept dashboard searches read-only in the extension and stored local drafts separately without changing schema-v2 scan snapshots or dashboard rows.
+
 ## Unreleased (recommended 23.0.7)
 
 - Migrated recovery state to compact schema 20 while retaining the established `scannerV19:activeRun` key and preserving pending failed uploads, settings, and authentication.
