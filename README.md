@@ -97,7 +97,7 @@ Version 23 adds only optional upload fields. Version 23.0.1 carries optional sou
 
 Version 23.0.2 adds optional accepted make/model arrays to existing JSON scan-filter metadata. Detected advert identity uses bounded vehicle attributes and diagnostics, so no database or API migration is required. Vauxhall and Opel remain distinct; Land Rover and Range Rover are not interchangeable.
 
-The pending 23.1 feature replaces those independent legacy settings with `filterSchemaVersion: 2`. The popup can load an active shared search from the dashboard, keeps a local editable draft in `chrome.storage.local`, and snapshots the complete normalized configuration into each scan. Legacy settings are normalized on read; they are not destructively rewritten in the database.
+Version 23.2 keeps the `filterSchemaVersion: 2` contract while moving full configuration into the extension settings tab. The popup is a compact scan cockpit. Dashboard searches stay read-only in the extension, local drafts are stored separately, and explicit Ignore / Include / Exclude controls support multiple specification values without contradictory selections. Legacy settings are normalized on read; they are not destructively rewritten in the database.
 
 Use **Clear local state** only after remote completion. See [docs/RECOVERY.md](docs/RECOVERY.md).
 

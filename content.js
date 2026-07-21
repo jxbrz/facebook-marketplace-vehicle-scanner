@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.1.0";
+const EXTENSION_VERSION = "23.2.0";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,

@@ -11,7 +11,7 @@ const {
 test("Web Store runtime allow-list contains every required manifest file and no forbidden paths", () => {
   auditRuntimeFiles();
   const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
-  const required = [manifest.background.service_worker, manifest.action.default_popup, ...manifest.content_scripts.flatMap((script) => [...script.js, ...(script.css || [])]), ...Object.values(manifest.icons)];
+  const required = [manifest.background.service_worker, manifest.action.default_popup, manifest.options_page, ...manifest.content_scripts.flatMap((script) => [...script.js, ...(script.css || [])]), ...Object.values(manifest.icons)];
   for (const file of required) assert.equal(EXPECTED_FILES.includes(file), true, `Missing from package allow-list: ${file}`);
   for (const file of EXPECTED_FILES) assert.equal(FORBIDDEN_PATH.test(file), false, file);
 });
