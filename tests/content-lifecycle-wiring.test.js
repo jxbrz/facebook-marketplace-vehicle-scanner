@@ -84,6 +84,24 @@ test("performance diagnostics are opt-in and expose aggregates without listing t
   assert.doesNotMatch(source, /recordListing\([^\n]*token/i);
 });
 
+test("image diagnostics expose only bounded ownership aggregates and a hashed listing ID", () => {
+  const diagnostics = functionSource("maybeLogImageExtractionDiagnostics", "function recordLifecycleDiagnostic");
+  for (const field of [
+    "listingIdHash",
+    "selectedExtractionSource",
+    "imageExtractionStatus",
+    "declaredPhotoCount",
+    "galleryCandidateCount",
+    "acceptedCount",
+    "rejectionReasonCounts",
+    "carouselControlsDetected",
+    "cardFallbackUsed"
+  ]) assert.match(diagnostics, new RegExp(field));
+  assert.doesNotMatch(diagnostics, /\blistingId:/);
+  assert.doesNotMatch(diagnostics, /\.\.\.result\.imageDiagnostics|imageUrls:/);
+  assert.match(diagnostics, /imageDiagnosticsLogged\.size >= 25/);
+});
+
 test("card thumbnail fallback is tied to the exact canonical listing anchor", () => {
   const extraction = functionSource("extractCardMetadata", "function getViewportPriority");
   assert.match(extraction, /normaliseListingUrl\(anchor\.href\)\?\.id === listingId/);

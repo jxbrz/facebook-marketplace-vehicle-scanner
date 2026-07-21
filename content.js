@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.0.7";
+const EXTENSION_VERSION = "23.0.8";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -109,7 +109,7 @@ let storageFixedBytes = 0;
 let processingQueue = null;
 let domMutationVersion = 0;
 let debugSummaryLastLoggedAt = 0;
-let imageDiagnosticsLogged = false;
+let imageDiagnosticsLogged = new Set();
 const scanDelayWaits = new Set();
 
 function resetPerformanceDiagnostics() {
@@ -134,15 +134,27 @@ function maybeLogPerformanceSummary(progress) {
   });
 }
 
-function maybeLogImageExtractionDiagnostics(listingId, result) {
-  if (!settings.scannerDebugDiagnostics || imageDiagnosticsLogged || !result?.imageDiagnostics) return;
-  imageDiagnosticsLogged = true;
+function maybeLogImageExtractionDiagnostics(listingId, result, metadata = {}) {
+  if (!settings.scannerDebugDiagnostics || !result) return;
+  const listingIdHash = ListingDetailsExtractor.shortPathHash(String(listingId || ""));
+  if (imageDiagnosticsLogged.has(listingIdHash) || imageDiagnosticsLogged.size >= 25) return;
+  imageDiagnosticsLogged.add(listingIdHash);
+  const resolved = ListingDetailsExtractor.resolveListingImages(result, {
+    listingId,
+    sourceListingId: metadata.imageOwnerListingId,
+    imageUrl: metadata.imageUrl
+  });
+  const diagnostics = result.imageDiagnostics || {};
   console.info("Marketplace Vehicle Scanner image ownership summary:", {
-    listingId: String(listingId || "").slice(0, 160),
-    extractionSource: result.listingDetailExtractionSource || result.extractionSource || null,
-    imageExtractionStatus: result.imageExtractionStatus || "unavailable",
-    ...result.imageDiagnostics,
-    finalImageCount: Array.isArray(result.imageUrls) ? result.imageUrls.length : 0
+    listingIdHash,
+    selectedExtractionSource: resolved.imageExtractionSource,
+    imageExtractionStatus: resolved.imageExtractionStatus,
+    declaredPhotoCount: Number(diagnostics.declaredPhotoCount) || null,
+    galleryCandidateCount: Number(diagnostics.galleryCandidateCount) || 0,
+    acceptedCount: Number(diagnostics.acceptedCount) || resolved.imageUrls.length,
+    rejectionReasonCounts: { ...(diagnostics.rejectionReasons || {}) },
+    carouselControlsDetected: diagnostics.carouselControlsDetected === true,
+    cardFallbackUsed: resolved.imageExtractionSource === "card_thumbnail"
   });
 }
 
@@ -1396,7 +1408,7 @@ async function processListing(entry, generation) {
 
   if (!scanIsRunning() || generation !== scanGeneration) return;
 
-  maybeLogImageExtractionDiagnostics(listing.id, result);
+  maybeLogImageExtractionDiagnostics(listing.id, result, metadata);
 
   await saveCachedResult(listing.id, result);
   classifyListing(listing.id, metadata, result, "facebook-listing-page");
@@ -2118,7 +2130,7 @@ function resetRunMemory() {
   lastUploadAttemptAt = null;
   progressSyncInFlight = false;
   completionInFlight = false;
-  imageDiagnosticsLogged = false;
+  imageDiagnosticsLogged = new Set();
   processingQueue = createProcessingQueue();
   resetPerformanceDiagnostics();
 }

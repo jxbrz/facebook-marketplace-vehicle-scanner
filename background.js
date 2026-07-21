@@ -385,6 +385,15 @@ async function inspectListing(url, runToken, debug = false) {
       listingDetails = ListingDetailsExtractor.mergeListingDetails(staticListingDetails, renderedListingDetails);
     } catch {
       // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
+      if (debug) {
+        listingDetails = {
+          ...staticListingDetails,
+          imageDiagnostics: {
+            ...(staticListingDetails.imageDiagnostics || {}),
+            renderedInspectionFailed: true
+          }
+        };
+      }
     }
   }
   const scoped = extractScopedText(html, listingId);

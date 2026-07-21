@@ -1,0 +1,49 @@
+{
+  "galleryCandidates": [
+    { "identity": "depth-1-narrow-parent", "depthFromPrimary": 1, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-2-narrow-parent", "depthFromPrimary": 2, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-3-narrow-parent", "depthFromPrimary": 3, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-4-narrow-parent", "depthFromPrimary": 4, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-5-narrow-parent", "depthFromPrimary": 5, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-6-narrow-parent", "depthFromPrimary": 6, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-7-narrow-parent", "depthFromPrimary": 7, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-8-narrow-parent", "depthFromPrimary": 8, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-9-narrow-parent", "depthFromPrimary": 9, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-10-narrow-parent", "depthFromPrimary": 10, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-11-narrow-parent", "depthFromPrimary": 11, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-12-narrow-parent", "depthFromPrimary": 12, "containsPrimary": true, "ownedMediaCount": 1, "largeMediaCount": 1, "repeatedSizeCount": 1, "excludedMediaCount": 0, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 0, "isListingRoot": false },
+    { "identity": "depth-13-cohesive-gallery", "depthFromPrimary": 13, "containsPrimary": true, "ownedMediaCount": 11, "largeMediaCount": 11, "repeatedSizeCount": 9, "excludedMediaCount": 12, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 6, "isListingRoot": false },
+    { "identity": "depth-14-gallery-shell", "depthFromPrimary": 14, "containsPrimary": true, "ownedMediaCount": 11, "largeMediaCount": 11, "repeatedSizeCount": 9, "excludedMediaCount": 13, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 7, "isListingRoot": false },
+    { "identity": "depth-15-marketplace-main", "depthFromPrimary": 15, "containsPrimary": true, "ownedMediaCount": 11, "largeMediaCount": 11, "repeatedSizeCount": 9, "excludedMediaCount": 25, "nextControlCount": 0, "previousControlCount": 0, "declaredCount": null, "foreignListingLinkCount": 25, "isListingRoot": true }
+  ],
+  "legacyCandidateCount": 12,
+  "expectedGalleryIdentity": "depth-13-cohesive-gallery",
+  "expectedImageUrls": [
+    "https://scontent-lhr6-1.xx.fbcdn.net/genuine-01.jpg",
+    "https://scontent-lhr8-2.xx.fbcdn.net/genuine-02.jpg",
+    "https://scontent-lhr6-1.xx.fbcdn.net/genuine-03.jpg",
+    "https://scontent-lhr8-2.xx.fbcdn.net/genuine-04.jpg",
+    "https://scontent-lhr6-1.xx.fbcdn.net/genuine-05.jpg",
+    "https://scontent-lhr11-1.xx.fbcdn.net/genuine-06.jpg",
+    "https://scontent-lhr11-1.xx.fbcdn.net/genuine-07.jpg",
+    "https://scontent-lhr6-1.xx.fbcdn.net/genuine-08.jpg",
+    "https://scontent-lhr11-1.xx.fbcdn.net/genuine-09.jpg",
+    "https://scontent-lhr8-2.xx.fbcdn.net/genuine-10.jpg",
+    "https://scontent-lhr6-1.xx.fbcdn.net/genuine-11.jpg"
+  ],
+  "imageCandidates": [
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/genuine-01.jpg", "width": 720, "height": 960, "order": 0, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-2.xx.fbcdn.net/genuine-02.jpg", "width": 720, "height": 960, "order": 1, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/genuine-03.jpg", "width": 960, "height": 720, "order": 2, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-2.xx.fbcdn.net/genuine-04.jpg", "width": 720, "height": 960, "order": 3, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/genuine-05.jpg", "width": 720, "height": 960, "order": 4, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr11-1.xx.fbcdn.net/genuine-06.jpg", "width": 720, "height": 960, "order": 5, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr11-1.xx.fbcdn.net/genuine-07.jpg", "width": 720, "height": 960, "order": 6, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/genuine-08.jpg", "width": 960, "height": 720, "order": 7, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr11-1.xx.fbcdn.net/genuine-09.jpg", "width": 720, "height": 960, "order": 8, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr8-2.xx.fbcdn.net/genuine-10.jpg", "width": 720, "height": 960, "order": 9, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/genuine-11.jpg", "width": 720, "height": 960, "order": 10, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "listing-gallery" },
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/seller-avatar.jpg", "width": 96, "height": 96, "order": 11, "insideGallery": true, "insideListingRoot": true, "listingOwned": true, "ancestryCategory": "seller" },
+    { "url": "https://scontent-lhr6-1.xx.fbcdn.net/foreign-car.jpg", "width": 720, "height": 960, "order": 12, "insideGallery": true, "insideListingRoot": true, "listingOwned": false, "foreignListingId": "foreign", "ancestryCategory": "nearby-listing" }
+  ]
+}

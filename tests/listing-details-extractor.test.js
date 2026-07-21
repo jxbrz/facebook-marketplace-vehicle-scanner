@@ -5,12 +5,19 @@ const path = require("node:path");
 const {
   extractListingDetails,
   extractRenderedSnapshotDetails,
+  classifyRenderedGallery,
   filterOwnedImageCandidates,
+  galleryCandidateConfidence,
   mergeListingDetails,
+  mediaAssetDimensions,
   needsRenderedFallback,
   nextGalleryIterationState,
+  parseBackgroundImageUrls,
+  parseSrcset,
   resolveListingImages,
-  rankImageCandidates
+  rankImageCandidates,
+  scoreGalleryCandidate,
+  selectGalleryCandidate
 } = require("../listing-details-extractor.js");
 
 function fixture(listing) {
@@ -69,6 +76,37 @@ test("does not include avatars, recommendations, ads, or non-Facebook image host
   assert.equal(result.imageUrls.includes("https://scontent-lhr8-1.xx.fbcdn.net/avatar.jpg"), false);
   assert.equal(result.imageUrls.includes("https://scontent-lhr8-1.xx.fbcdn.net/recommendation.jpg"), false);
   assert.equal(result.imageUrls.includes("https://tracking.example/ad.jpg"), false);
+});
+
+test("treats Open Graph and unproven one-image results as partial", () => {
+  const openGraph = extractListingDetails(fixture({ id: "123", description: { text: "No photo array" } }), { listingId: "123" });
+  assert.deepEqual(openGraph.imageUrls, ["https://scontent-lhr8-1.xx.fbcdn.net/og.jpg"]);
+  assert.equal(openGraph.imageExtractionStatus, "partial");
+  assert.equal(openGraph.imageExtractionSource, "og_image");
+
+  const rendered = extractRenderedSnapshotDetails({
+    imageCandidates: [{
+      url: "https://scontent-lhr8-1.xx.fbcdn.net/uncertain-one.jpg",
+      width: 1600,
+      height: 900,
+      insideGallery: true,
+      listingOwned: true
+    }]
+  });
+  assert.equal(rendered.imageExtractionStatus, "partial");
+});
+
+test("allows a reliable authoritative count to prove a true one-photo listing", () => {
+  const result = extractListingDetails(fixture({
+    id: "123",
+    listing_photos: [{ image: { uri: "https://scontent-lhr8-1.xx.fbcdn.net/only-photo.jpg" } }]
+  }), { listingId: "123", debug: true });
+  assert.equal(result.imageExtractionStatus, "complete");
+  assert.equal(result.imageDiagnostics.declaredPhotoCount, 1);
+  assert.deepEqual(classifyRenderedGallery({ galleryFound: true, imageCount: 1, declaredCount: 1 }), {
+    status: "complete",
+    evidence: "declared gallery count reached"
+  });
 });
 
 test("does not cross a target listing object into a foreign recommendation subtree", () => {
@@ -174,6 +212,104 @@ test("accepts only the active listing gallery from a mixed Marketplace page fixt
   });
 });
 
+test("selects the cohesive gallery ancestor from the sanitized live dialog layout", () => {
+  const snapshot = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "fixtures", "live-dialog-gallery-2026-07.json"),
+    "utf8"
+  ));
+  const selected = selectGalleryCandidate(snapshot.galleryCandidates);
+  assert.equal(selected.identity, snapshot.expectedGalleryIdentity);
+  const ranked = rankImageCandidates(snapshot.imageCandidates);
+  assert.equal(ranked.imageUrls.length, 12);
+  assert.equal(ranked.imageUrls.every(url => /live-car-\d+\.jpg/.test(url)), true);
+  assert.deepEqual(classifyRenderedGallery({
+    galleryFound: true,
+    imageCount: ranked.imageUrls.length,
+    stableDom: true,
+    galleryConfidence: "high"
+  }), { status: "complete", evidence: "stable owned gallery DOM" });
+});
+
+test("selects and accepts the 11-photo cohesive ancestor despite foreign links elsewhere in marketplace-main", () => {
+  const snapshot = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "fixtures", "live-main-gallery-11-photos.json"),
+    "utf8"
+  ));
+  assert.equal(snapshot.legacyCandidateCount, 12);
+  assert.equal(snapshot.galleryCandidates[0].ownedMediaCount, 1);
+  const legacySelection = selectGalleryCandidate(snapshot.galleryCandidates.slice(0, snapshot.legacyCandidateCount));
+  assert.equal(legacySelection.ownedMediaCount, 1);
+
+  const selected = selectGalleryCandidate(snapshot.galleryCandidates);
+  assert.equal(selected.identity, snapshot.expectedGalleryIdentity);
+  assert.equal(selected.ownedMediaCount, 11);
+  assert.equal(selected.score < 48, true);
+  assert.equal(galleryCandidateConfidence(selected), "moderate");
+
+  const ranked = rankImageCandidates(snapshot.imageCandidates);
+  assert.deepEqual(ranked.imageUrls, snapshot.expectedImageUrls);
+  assert.equal(ranked.imageDiagnostics.acceptedCount, 11);
+  assert.equal(ranked.imageDiagnostics.rejectionReasons["seller avatar/profile"], 1);
+  assert.equal(ranked.imageDiagnostics.rejectionReasons["outside active listing"], 1);
+  assert.deepEqual(classifyRenderedGallery({
+    galleryFound: true,
+    imageCount: ranked.imageUrls.length,
+    stableDom: true,
+    galleryConfidence: galleryCandidateConfidence(selected),
+    additionalMediaEvidence: false
+  }), { status: "partial", evidence: null });
+
+  const highConfidenceBoundary = {
+    ...selected,
+    foreignListingLinkCount: 0,
+    excludedMediaCount: 0
+  };
+  highConfidenceBoundary.score = scoreGalleryCandidate(highConfidenceBoundary);
+  assert.equal(galleryCandidateConfidence(highConfidenceBoundary), "high");
+  assert.deepEqual(classifyRenderedGallery({
+    galleryFound: true,
+    imageCount: ranked.imageUrls.length,
+    stableDom: true,
+    galleryConfidence: galleryCandidateConfidence(highConfidenceBoundary),
+    additionalMediaEvidence: false
+  }), { status: "complete", evidence: "stable owned gallery DOM" });
+});
+
+test("counts small mounted thumbnails by intrinsic asset dimensions when scoring a cohesive gallery", () => {
+  const dimensions = mediaAssetDimensions({
+    rect: { width: 72, height: 96 },
+    element: { naturalWidth: 720, naturalHeight: 960 },
+    sources: [{ width: 720 }]
+  });
+  assert.deepEqual(dimensions, { width: 720, height: 960 });
+
+  const srcsetDimensions = mediaAssetDimensions({
+    rect: { width: 96, height: 72 },
+    element: { naturalWidth: 0, naturalHeight: 0 },
+    sources: [{ width: 960 }]
+  });
+  assert.deepEqual(srcsetDimensions, { width: 960, height: 720 });
+});
+
+test("extracts currentSrc alternatives and CSS background gallery assets without signed URL logging", () => {
+  assert.deepEqual(parseSrcset("https://scontent-lhr8-1.xx.fbcdn.net/a.jpg 640w, https://scontent-lhr8-1.xx.fbcdn.net/b.jpg 1280w"), [
+    { url: "https://scontent-lhr8-1.xx.fbcdn.net/a.jpg", width: 640 },
+    { url: "https://scontent-lhr8-1.xx.fbcdn.net/b.jpg", width: 1280 }
+  ]);
+  assert.deepEqual(parseBackgroundImageUrls("linear-gradient(#000,#fff), url('https://scontent-lhr8-1.xx.fbcdn.net/background.jpg?variant=large')"), [
+    "https://scontent-lhr8-1.xx.fbcdn.net/background.jpg?variant=large"
+  ]);
+});
+
+test("rendered traversal remains listing-root scoped, waits for identity changes, and never supplements from the page", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "listing-details-extractor.js"), "utf8");
+  assert.match(source, /element\.currentSrc \|\| element\.src/);
+  assert.match(source, /function waitForGalleryChange[\s\S]*primaryIdentity/);
+  assert.match(source, /next\.click\(\)[\s\S]*waitForGalleryChange/);
+  assert.match(source, /visibleListingMedia\(context\.listingRoot\)/);
+  assert.doesNotMatch(source, /visibleListingMedia\(document|querySelectorAll\("body img"\)/);
+});
+
 test("rejects unsafe URL forms, icons, and external listing ownership with redacted diagnostics", () => {
   const result = rankImageCandidates([
     { url: "blob:https://facebook.com/temp", insideGallery: true },
@@ -251,7 +387,8 @@ test("fallback accepts one same-listing Facebook thumbnail or returns empty", ()
   assert.deepEqual(owned, {
     imageUrl: "https://scontent-lhr8-1.xx.fbcdn.net/card.jpg",
     imageUrls: ["https://scontent-lhr8-1.xx.fbcdn.net/card.jpg"],
-    imageExtractionStatus: "partial"
+    imageExtractionStatus: "partial",
+    imageExtractionSource: "card_thumbnail"
   });
   assert.deepEqual(resolveListingImages(unavailable, {
     listingId: "123",
@@ -287,6 +424,32 @@ test("DOM recycling and source merging never combine galleries", () => {
   ]);
   assert.equal(filtered.accepted.length, 1);
   assert.equal(filtered.rejectionReasons["outside active listing"], 1);
+});
+
+test("source selection rejects a contradicted one-image completion without downgrading stronger complete galleries", () => {
+  const embeddedOne = {
+    imageUrls: ["https://scontent-lhr8-1.xx.fbcdn.net/static-one.jpg"],
+    primaryImageUrl: "https://scontent-lhr8-1.xx.fbcdn.net/static-one.jpg",
+    imageExtractionStatus: "complete",
+    imageExtractionSource: "embedded_listing_json",
+    vehicleAttributes: {}
+  };
+  const renderedMany = {
+    imageUrls: Array.from({ length: 12 }, (_, index) => `https://scontent-lhr8-1.xx.fbcdn.net/rendered-${index}.jpg`),
+    primaryImageUrl: "https://scontent-lhr8-1.xx.fbcdn.net/rendered-0.jpg",
+    imageExtractionStatus: "partial",
+    imageExtractionSource: "rendered_gallery",
+    vehicleAttributes: {},
+    extractionSource: "rendered-semantic-dom"
+  };
+  assert.deepEqual(mergeListingDetails(embeddedOne, renderedMany).imageUrls, renderedMany.imageUrls);
+
+  const embeddedComplete = {
+    ...embeddedOne,
+    imageUrls: Array.from({ length: 5 }, (_, index) => `https://scontent-lhr8-1.xx.fbcdn.net/static-${index}.jpg`),
+    primaryImageUrl: "https://scontent-lhr8-1.xx.fbcdn.net/static-0.jpg"
+  };
+  assert.deepEqual(mergeListingDetails(embeddedComplete, renderedMany).imageUrls, embeddedComplete.imageUrls);
 });
 
 test("lets final rendered details replace static fallbacks and degrades safely", () => {

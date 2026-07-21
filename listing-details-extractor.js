@@ -502,10 +502,25 @@
 
   function extractEmbeddedImages(candidates, html, listingId, debug = false) {
     const imageCandidates = [];
+    let declaredPhotoCount = null;
     for (const candidate of candidates) {
       let order = 0;
       for (const value of findListingScopedNamedValues(candidate, PHOTO_KEYS, listingId)) {
-        collectImageCandidates(value, { order: order * 100, width: 0, height: 0, mediaId: null }, imageCandidates);
+        const valueCandidates = [];
+        collectImageCandidates(value, { order: order * 100, width: 0, height: 0, mediaId: null }, valueCandidates);
+        imageCandidates.push(...valueCandidates);
+        if (Array.isArray(value) && value.length) {
+          const itemIdentities = new Set();
+          let everyItemHasOwnedImage = true;
+          value.forEach((item, index) => {
+            const itemCandidates = [];
+            collectImageCandidates(item, { order: index, width: 0, height: 0, mediaId: null }, itemCandidates);
+            const itemImages = rankImageCandidates(itemCandidates).imageUrls;
+            if (!itemImages.length) everyItemHasOwnedImage = false;
+            itemImages.slice(0, 1).forEach(url => itemIdentities.add(facebookAssetIdentity(url)));
+          });
+          if (everyItemHasOwnedImage && itemIdentities.size) declaredPhotoCount = itemIdentities.size;
+        }
         order += 1;
       }
       if (imageCandidates.length) break;
@@ -537,14 +552,21 @@
     const { imageDiagnostics, ...images } = ranked;
     return {
       ...images,
+      imageExtractionSource: structuredCandidateCount ? "embedded_listing_json" : images.imageUrls.length ? "og_image" : null,
       imageDiagnostics: debug ? {
         ...imageDiagnostics,
         extractionSource: structuredCandidateCount ? "listing-scoped-embedded-data" : "listing-open-graph",
         galleryContainerIdentity: structuredCandidateCount ? "embedded-photo-field" : "open-graph-fallback",
+        declaredPhotoCount,
+        galleryCandidateCount: structuredCandidateCount ? 1 : 0,
+        carouselControlsDetected: false,
+        completionEvidence: declaredPhotoCount && images.imageUrls.length >= declaredPhotoCount
+          ? "authoritative embedded photo count reached"
+          : null,
         wrapped: false,
         finalImageCount: images.imageUrls.length
       } : null,
-      imageExtractionStatus: structuredCandidateCount && images.imageUrls.length
+      imageExtractionStatus: structuredCandidateCount && declaredPhotoCount && images.imageUrls.length >= declaredPhotoCount
         ? "complete"
         : images.imageUrls.length
           ? "partial"
@@ -673,7 +695,8 @@
       listingTitle: normaliseText(snapshot?.listingTitle, 500),
       fullDescription: descriptionLines.length ? descriptionLines.join("\n") : null,
       ...images,
-      imageExtractionStatus: snapshot?.imageExtractionStatus || (images.imageUrls.length ? "complete" : "unavailable"),
+      imageExtractionStatus: snapshot?.imageExtractionStatus || (images.imageUrls.length ? "partial" : "unavailable"),
+      imageExtractionSource: images.imageUrls.length ? "rendered_gallery" : null,
       imageDiagnostics: snapshot?.includeImageDiagnostics ? {
         ...imageDiagnostics,
         ...(snapshot.galleryDiagnostics || {})
@@ -694,12 +717,16 @@
 
   function mergeListingDetails(embedded, rendered) {
     if (!rendered) return embedded;
-    const imageSources = [embedded, rendered];
-    const selectedImages = imageSources.find(details =>
-      details?.imageExtractionStatus === "complete" && details.imageUrls?.length
-    ) || imageSources.find(details =>
-      details?.imageExtractionStatus === "partial" && details.imageUrls?.length
-    ) || null;
+    const imageSources = [embedded, rendered].filter(details => details?.imageUrls?.length);
+    const completeSource = imageSources
+      .filter(details => details.imageExtractionStatus === "complete")
+      .sort((left, right) => right.imageUrls.length - left.imageUrls.length)[0] || null;
+    const largestSource = imageSources
+      .sort((left, right) => right.imageUrls.length - left.imageUrls.length ||
+        Number(right.imageExtractionStatus === "complete") - Number(left.imageExtractionStatus === "complete"))[0] || null;
+    const selectedImages = completeSource?.imageUrls.length === 1 && largestSource?.imageUrls.length > 1
+      ? largestSource
+      : completeSource || largestSource;
     const imageUrls = selectedImages?.imageUrls || [];
     return {
       fullDescription: rendered.fullDescription || embedded?.fullDescription || null,
@@ -707,7 +734,8 @@
       primaryImageUrl: selectedImages?.primaryImageUrl || imageUrls[0] || null,
       imageUrls,
       imageExtractionStatus: selectedImages?.imageExtractionStatus || "unavailable",
-      imageDiagnostics: rendered.imageDiagnostics || embedded?.imageDiagnostics || null,
+      imageExtractionSource: selectedImages?.imageExtractionSource || null,
+      imageDiagnostics: selectedImages?.imageDiagnostics || null,
       vehicleAttributes: { ...(embedded?.vehicleAttributes || {}), ...(rendered.vehicleAttributes || {}) },
       mileageDetail: embedded?.mileageDetail || rendered.mileageDetail || null,
       transmission: embedded?.transmission || rendered.transmission || null,
@@ -744,7 +772,8 @@
       return {
         imageUrl: detailImages[0] || null,
         imageUrls: detailImages,
-        imageExtractionStatus: status
+        imageExtractionStatus: status,
+        imageExtractionSource: details?.imageExtractionSource || "listing_detail"
       };
     }
 
@@ -756,10 +785,11 @@
       return {
         imageUrl: fallback.imageUrl,
         imageUrls: [fallback.imageUrl],
-        imageExtractionStatus: "partial"
+        imageExtractionStatus: "partial",
+        imageExtractionSource: "card_thumbnail"
       };
     }
-    return { imageUrl: null, imageUrls: [], imageExtractionStatus: "unavailable" };
+    return { imageUrl: null, imageUrls: [], imageExtractionStatus: "unavailable", imageExtractionSource: null };
   }
 
   function needsRenderedFallback(details) {
@@ -810,6 +840,170 @@
     }).filter(Boolean);
   }
 
+  function parseBackgroundImageUrls(value) {
+    return [...String(value || "").matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)]
+      .map(match => match[1])
+      .filter(isFacebookImageUrl);
+  }
+
+  function galleryControlSignal(element) {
+    return [
+      element?.getAttribute?.("aria-label"),
+      element?.getAttribute?.("title"),
+      elementText(element)
+    ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 240);
+  }
+
+  function galleryControlState(galleryRoot) {
+    const controls = galleryRoot
+      ? [...galleryRoot.querySelectorAll('button,[role="button"]')].filter(isVisible)
+      : [];
+    const nextControls = controls.filter(control => /\bnext(?:\s+(?:photo|image))?\b/i.test(galleryControlSignal(control)));
+    const previousControls = controls.filter(control => /\bprev(?:ious)?(?:\s+(?:photo|image))?\b/i.test(galleryControlSignal(control)));
+    const enabled = control => !control.disabled && control.getAttribute?.("aria-disabled") !== "true";
+    return {
+      next: nextControls.find(enabled) || null,
+      nextDisabled: Boolean(nextControls.length && !nextControls.some(enabled)),
+      previousCount: previousControls.length,
+      nextCount: nextControls.length,
+      detected: Boolean(nextControls.length || previousControls.length)
+    };
+  }
+
+  function declaredPhotoCountFor(root) {
+    if (!root) return null;
+    const values = [
+      ...[...root.querySelectorAll("[aria-label],[title]")].flatMap(element => [
+        element.getAttribute("aria-label"),
+        element.getAttribute("title")
+      ]),
+      elementText(root).match(/(?:photo|image)?\s*\d+\s*(?:of|\/)\s*\d+/gi) || []
+    ].flat().filter(Boolean);
+    return values.reduce((maximum, value) => {
+      const match = String(value).match(/(?:photo|image)?\s*\d+\s*(?:of|\/)\s*(\d+)/i);
+      return Math.max(maximum, Number(match?.[1]) || 0);
+    }, 0) || null;
+  }
+
+  function elementMediaSources(element) {
+    const sources = [];
+    if (element?.tagName === "IMG") {
+      parseSrcset(element.getAttribute?.("srcset")).forEach(item => sources.push({
+        url: item.url,
+        width: item.width,
+        source: "rendered-srcset"
+      }));
+      const url = element.currentSrc || element.src;
+      if (url) sources.push({ url, width: Number(element.naturalWidth) || 0, source: "rendered-src" });
+    }
+    const background = globalThis.getComputedStyle?.(element)?.backgroundImage;
+    parseBackgroundImageUrls(background).forEach(url => sources.push({
+      url,
+      width: Math.round(element.getBoundingClientRect?.().width || 0),
+      source: "rendered-background"
+    }));
+    return sources.filter(item => isFacebookImageUrl(item.url));
+  }
+
+  function visibleListingMedia(root) {
+    if (!root) return [];
+    return [root, ...root.querySelectorAll("*")].slice(0, 5000)
+      .filter(isVisible)
+      .map(element => ({ element, sources: elementMediaSources(element), rect: element.getBoundingClientRect() }))
+      .filter(item => item.sources.length);
+  }
+
+  function mediaAssetDimensions(item) {
+    const renderedWidth = Number(item?.rect?.width) || 0;
+    const renderedHeight = Number(item?.rect?.height) || 0;
+    const width = Math.max(
+      renderedWidth,
+      Number(item?.element?.naturalWidth) || 0,
+      ...(Array.isArray(item?.sources) ? item.sources.map(source => Number(source.width) || 0) : [0])
+    );
+    const naturalHeight = Number(item?.element?.naturalHeight) || 0;
+    const height = Math.max(
+      renderedHeight,
+      naturalHeight,
+      width > renderedWidth && renderedWidth > 0 && renderedHeight > 0
+        ? Math.round(width * renderedHeight / renderedWidth)
+        : 0
+    );
+    return { width, height };
+  }
+
+  function isSubstantialGalleryMedia(item) {
+    const dimensions = mediaAssetDimensions(item);
+    return dimensions.width * dimensions.height >= 10000 &&
+      !(dimensions.width <= 128 && dimensions.height <= 128);
+  }
+
+  function scoreGalleryCandidate(candidate) {
+    if (!candidate?.containsPrimary) return -Infinity;
+    const owned = Number(candidate.ownedMediaCount) || 0;
+    const large = Number(candidate.largeMediaCount) || 0;
+    const repeated = Number(candidate.repeatedSizeCount) || 0;
+    const excluded = Number(candidate.excludedMediaCount) || 0;
+    const foreignLinks = Number(candidate.foreignListingLinkCount) || 0;
+    const controls = (Number(candidate.nextControlCount) || 0) + (Number(candidate.previousControlCount) || 0);
+    return 35 + Math.min(owned, LIMITS.imageCount) * 7 + Math.min(large, 3) * 8 +
+      Math.min(repeated, 10) * 3 + Math.min(controls, 2) * 14 +
+      (Number(candidate.declaredCount) > 0 ? 18 : 0) - excluded * 18 -
+      Math.min(foreignLinks, 4) * 14 -
+      Math.max(0, owned - repeated - 1) * 12 -
+      (candidate.isListingRoot ? 55 : 0) - Math.max(0, Number(candidate.depthFromPrimary) - 6) * 3;
+  }
+
+  function galleryCandidateConfidence(candidate) {
+    return candidate?.score >= 85 &&
+      Number(candidate.ownedMediaCount) > 1 &&
+      Number(candidate.foreignListingLinkCount) === 0 &&
+      Number(candidate.excludedMediaCount) === 0 &&
+      candidate.isListingRoot !== true
+      ? "high"
+      : "moderate";
+  }
+
+  function selectGalleryCandidate(candidates) {
+    const scored = (Array.isArray(candidates) ? candidates : [])
+      .map(candidate => ({ ...candidate, score: scoreGalleryCandidate(candidate) }))
+      .filter(candidate => Number.isFinite(candidate.score));
+    const strongest = scored
+      .filter(candidate => candidate.score >= 48)
+      .sort((left, right) => right.score - left.score ||
+        right.ownedMediaCount - left.ownedMediaCount ||
+        left.depthFromPrimary - right.depthFromPrimary)[0] || null;
+    const cohesive = scored
+      .filter(candidate => Number(candidate.ownedMediaCount) >= 3 &&
+        Number(candidate.largeMediaCount) >= 2 &&
+        Number(candidate.repeatedSizeCount) >= 2)
+      .sort((left, right) =>
+        Number(right.repeatedSizeCount) - Number(left.repeatedSizeCount) ||
+        (Number(left.ownedMediaCount) - Number(left.repeatedSizeCount)) -
+          (Number(right.ownedMediaCount) - Number(right.repeatedSizeCount)) ||
+        Number(left.excludedMediaCount) - Number(right.excludedMediaCount) ||
+        Number(left.foreignListingLinkCount) - Number(right.foreignListingLinkCount) ||
+        Number(left.depthFromPrimary) - Number(right.depthFromPrimary))[0] || null;
+    return cohesive && Number(cohesive.ownedMediaCount) >= Number(strongest?.ownedMediaCount || 0) + 2
+      ? cohesive
+      : strongest;
+  }
+
+  function classifyRenderedGallery(input = {}) {
+    const imageCount = Number(input.imageCount) || 0;
+    const declaredCount = Number(input.declaredCount) || 0;
+    if (!input.galleryFound || !imageCount) return { status: "unavailable", evidence: null };
+    if (declaredCount > 0 && imageCount >= Math.min(declaredCount, LIMITS.imageCount)) {
+      return { status: "complete", evidence: "declared gallery count reached" };
+    }
+    if (imageCount > 1 && input.wrapped) return { status: "complete", evidence: "carousel wrapped" };
+    if (imageCount > 1 && input.explicitEnd) return { status: "complete", evidence: "carousel end reached" };
+    if (imageCount > 1 && input.stableDom && input.galleryConfidence === "high" && !input.additionalMediaEvidence) {
+      return { status: "complete", evidence: "stable owned gallery DOM" };
+    }
+    return { status: "partial", evidence: null };
+  }
+
   function semanticAncestryCategory(image, foreignListingId) {
     if (foreignListingId) return "nearby-listing";
     if (image.closest?.('nav,[role="navigation"],[role="banner"]')) return "navigation";
@@ -839,67 +1033,98 @@
   function findGalleryContext(listingId) {
     const active = findActiveListingRoot(listingId);
     if (!active) return null;
-    const eligible = [...active.root.querySelectorAll("img")]
-      .filter(isVisible)
-      .filter(image => {
-        const linkedId = image.closest?.('a[href*="/marketplace/item/"]')?.href?.match(/\/marketplace\/item\/(\d+)/)?.[1];
+    const media = visibleListingMedia(active.root);
+    const eligible = media
+      .filter(item => {
+        const linkedId = item.element.closest?.('a[href*="/marketplace/item/"]')?.href?.match(/\/marketplace\/item\/(\d+)/)?.[1];
         const foreignId = linkedId && linkedId !== listingId ? linkedId : null;
-        return !foreignId && !EXCLUDED_IMAGE_ANCESTRY.has(semanticAncestryCategory(image, null));
+        return !foreignId && !EXCLUDED_IMAGE_ANCESTRY.has(semanticAncestryCategory(item.element, null));
       })
-      .map(image => ({ image, rect: image.getBoundingClientRect() }))
       .filter(item => item.rect.width >= 240 && item.rect.height >= 160)
       .sort((left, right) => right.rect.width * right.rect.height - left.rect.width * left.rect.height);
-    const primary = eligible[0]?.image || null;
+    const primary = eligible[0]?.element || null;
     if (!primary) return null;
 
-    let galleryRoot = null;
-    let ancestor = primary.parentElement;
-    const primaryRect = primary.getBoundingClientRect();
-    for (let depth = 0; ancestor && depth < 8; depth += 1, ancestor = ancestor.parentElement) {
-      if (!active.root.contains(ancestor)) break;
-      const hasGalleryNext = [...ancestor.querySelectorAll("button[aria-label]")].some(button =>
-        /^(?:next|next photo|next image)/i.test(button.getAttribute("aria-label") || "") &&
-        !button.disabled && button.getAttribute("aria-disabled") !== "true" && isVisible(button) &&
-        (() => {
-          const rect = button.getBoundingClientRect();
-          const centreY = rect.top + rect.height / 2;
-          return rect.left <= primaryRect.right + 120 && rect.right >= primaryRect.left - 120 &&
-            centreY >= primaryRect.top - 60 && centreY <= primaryRect.bottom + 60;
-        })()
-      );
-      if (hasGalleryNext) {
-        galleryRoot = ancestor;
-        break;
+    const roots = [];
+    function describeCandidateRoot(ancestor, depth) {
+      const candidateMedia = media.filter(item => ancestor.contains(item.element));
+      const ownedMedia = [];
+      let excludedMediaCount = 0;
+      for (const item of candidateMedia) {
+        const linkedId = item.element.closest?.('a[href*="/marketplace/item/"]')?.href?.match(/\/marketplace\/item\/(\d+)/)?.[1] || null;
+        const foreignId = linkedId && linkedId !== listingId ? linkedId : null;
+        const category = semanticAncestryCategory(item.element, foreignId);
+        if (!foreignId && !EXCLUDED_IMAGE_ANCESTRY.has(category) && isSubstantialGalleryMedia(item)) ownedMedia.push(item);
+        else excludedMediaCount += 1;
       }
+      const sizeCounts = new Map();
+      ownedMedia.forEach(item => {
+        const key = `${Math.round(item.rect.width / 20)}:${Math.round(item.rect.height / 20)}`;
+        sizeCounts.set(key, (sizeCounts.get(key) || 0) + 1);
+      });
+      const controls = galleryControlState(ancestor);
+      const foreignListingLinkCount = [...ancestor.querySelectorAll('a[href*="/marketplace/item/"]')]
+        .filter(link => {
+          const id = link.href?.match(/\/marketplace\/item\/(\d+)/)?.[1];
+          return id && id !== listingId;
+        }).length;
+      return {
+        element: ancestor,
+        depthFromPrimary: depth,
+        containsPrimary: ancestor.contains(primary),
+        ownedMediaCount: ownedMedia.length,
+        largeMediaCount: ownedMedia.filter(item => {
+          const dimensions = mediaAssetDimensions(item);
+          return dimensions.width >= 240 && dimensions.height >= 160;
+        }).length,
+        repeatedSizeCount: Math.max(0, ...sizeCounts.values()),
+        excludedMediaCount,
+        nextControlCount: controls.nextCount,
+        enabledNextControlCount: controls.next ? 1 : 0,
+        previousControlCount: controls.previousCount,
+        declaredCount: declaredPhotoCountFor(ancestor),
+        foreignListingLinkCount,
+        isListingRoot: ancestor === active.root
+      };
+    }
+
+    let ancestor = primary.parentElement;
+    for (let depth = 1; ancestor && depth <= 40; depth += 1, ancestor = ancestor.parentElement) {
+      if (!active.root.contains(ancestor)) break;
+      roots.push(describeCandidateRoot(ancestor, depth));
       if (ancestor === active.root) break;
     }
-    galleryRoot ||= primary.closest?.('button,[role="group"]') || primary.parentElement || null;
-
+    if (!roots.some(candidate => candidate.isListingRoot) && active.root.contains(primary)) {
+      roots.push(describeCandidateRoot(active.root, roots.length + 1));
+    }
+    const selected = selectGalleryCandidate(roots);
+    const galleryRoot = selected?.element || null;
     if (!galleryRoot || !active.root.contains(galleryRoot)) return null;
-    const labels = [...galleryRoot.querySelectorAll("[aria-label]")]
-      .map(element => element.getAttribute("aria-label") || "");
-    const declaredCount = labels.reduce((maximum, label) => {
-      const match = label.match(/(?:photo|image)?\s*\d+\s*(?:of|\/)\s*(\d+)/i);
-      return Math.max(maximum, Number(match?.[1]) || 0);
-    }, 0) || null;
     return {
       listingRoot: active.root,
       galleryRoot,
-      containerIdentity: `${active.identity}:${galleryRoot.getAttribute?.("role") || galleryRoot.tagName?.toLowerCase() || "element"}`,
-      declaredCount
+      containerIdentity: `${active.identity}:${galleryRoot.getAttribute?.("role") || galleryRoot.tagName?.toLowerCase() || "element"}:depth-${selected.depthFromPrimary}`,
+      declaredCount: selected.declaredCount,
+      galleryCandidateCount: roots.length,
+      galleryScore: selected.score,
+      selectedOwnedMediaCount: selected.ownedMediaCount,
+      selectedForeignListingLinkCount: selected.foreignListingLinkCount,
+      selectedExcludedMediaCount: selected.excludedMediaCount,
+      gallerySearchReachedListingRoot: roots.some(candidate => candidate.isListingRoot),
+      confidence: galleryCandidateConfidence(selected)
     };
   }
 
   function captureImageCandidates(listingId, orderOffset = 0, context = findGalleryContext(listingId)) {
     if (!context?.listingRoot || !context.galleryRoot) return { candidates: [], primaryIdentity: null, context: null };
     const output = [];
-    const galleryImages = [...context.galleryRoot.querySelectorAll("img")].filter(isVisible);
-    const primaryImage = galleryImages
-      .map(image => ({ image, rect: image.getBoundingClientRect() }))
-      .sort((left, right) => right.rect.width * right.rect.height - left.rect.width * left.rect.height)[0]?.image || null;
+    const listingMedia = visibleListingMedia(context.listingRoot);
+    const galleryMedia = listingMedia.filter(item => context.galleryRoot.contains(item.element));
+    const primaryElement = galleryMedia
+      .sort((left, right) => right.rect.width * right.rect.height - left.rect.width * left.rect.height)[0]?.element || null;
 
-    [...context.listingRoot.querySelectorAll("img")].forEach((image, index) => {
-      if (!isVisible(image)) return;
+    listingMedia.forEach((item, index) => {
+      const image = item.element;
       const listingLink = image.closest?.('a[href*="/marketplace/item/"]');
       const linkedId = listingLink?.href?.match(/\/marketplace\/item\/(\d+)/)?.[1] || null;
       const foreignListingId = linkedId && linkedId !== listingId ? linkedId : null;
@@ -921,19 +1146,23 @@
         foreignListingId,
         ancestryCategory: semanticAncestryCategory(image, foreignListingId),
         thumbnail: naturalWidth > 0 && naturalWidth < 500,
-        isPrimary: image === primaryImage
+        isPrimary: image === primaryElement
       };
       if (/blur/i.test(style?.filter || "")) {
         output.push({ ...common, url: image.currentSrc || image.src, width: naturalWidth, listingOwned: false, ancestryCategory: "ui", source: "rendered-blurred" });
         return;
       }
-      for (const item of parseSrcset(image.getAttribute?.("srcset"))) {
-        output.push({ ...common, url: item.url, width: item.width, source: "rendered-srcset", thumbnail: item.width < 500 });
+      for (const source of item.sources) {
+        output.push({
+          ...common,
+          url: source.url,
+          width: source.width || naturalWidth,
+          source: source.source,
+          thumbnail: (source.width || naturalWidth) < 500
+        });
       }
-      const url = image.currentSrc || image.src;
-      if (url) output.push({ ...common, url, width: naturalWidth, source: "rendered-src" });
     });
-    const primaryUrl = primaryImage?.currentSrc || primaryImage?.src || null;
+    const primaryUrl = primaryElement ? elementMediaSources(primaryElement)[0]?.url || null : null;
     return {
       candidates: output,
       primaryIdentity: facebookAssetIdentity(primaryUrl),
@@ -990,17 +1219,32 @@
   }
 
   function findNextCarouselButton(galleryRoot) {
-    if (!galleryRoot) return null;
-    return [...galleryRoot.querySelectorAll("button[aria-label]")].find(button =>
-      /^(?:next|next photo|next image)/i.test(button.getAttribute("aria-label") || "") &&
-      !button.disabled &&
-      button.getAttribute("aria-disabled") !== "true" &&
-      isVisible(button)
-    ) || null;
+    return galleryControlState(galleryRoot).next;
   }
 
   function delay(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
+  }
+
+  function candidateAssetSet(candidates) {
+    return rankImageCandidates(candidates).imageUrls
+      .map(facebookAssetIdentity)
+      .filter(Boolean)
+      .sort();
+  }
+
+  function equalStringArrays(left, right) {
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+
+  async function waitForGalleryChange(listingId, previousIdentity) {
+    let latest = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await delay(80);
+      latest = captureImageCandidates(listingId);
+      if (!latest.context || latest.primaryIdentity !== previousIdentity) return latest;
+    }
+    return latest;
   }
 
   async function collectRenderedListingDetails(listingId, options = {}) {
@@ -1016,11 +1260,30 @@
     let iterationState = {};
     let galleryContainerIdentity = null;
     let declaredCount = null;
+    let galleryCandidateCount = 0;
+    let galleryConfidence = null;
+    let selectedOwnedMediaCount = 0;
+    let selectedForeignListingLinkCount = 0;
+    let selectedExcludedMediaCount = 0;
+    let gallerySearchReachedListingRoot = false;
+    let carouselControlsDetected = false;
+    let enabledNextControlDetected = false;
+    let clickedCarousel = false;
+    let explicitEnd = false;
+    let stableDom = false;
+    let pendingCapture = null;
     for (let step = 0; step < LIMITS.imageCount; step += 1) {
-      const captured = captureImageCandidates(listingId, step * 1000);
+      const captured = pendingCapture || captureImageCandidates(listingId, step * 1000);
+      pendingCapture = null;
       if (!captured.context) break;
       galleryContainerIdentity = captured.context.containerIdentity;
       declaredCount = captured.context.declaredCount;
+      galleryCandidateCount = captured.context.galleryCandidateCount;
+      galleryConfidence = captured.context.confidence;
+      selectedOwnedMediaCount = captured.context.selectedOwnedMediaCount;
+      selectedForeignListingLinkCount = captured.context.selectedForeignListingLinkCount;
+      selectedExcludedMediaCount = captured.context.selectedExcludedMediaCount;
+      gallerySearchReachedListingRoot = captured.context.gallerySearchReachedListingRoot;
       const nextState = nextGalleryIterationState(iterationState, captured.primaryIdentity, declaredCount);
       if (nextState.wrapped) {
         iterationState = nextState;
@@ -1029,31 +1292,65 @@
       allImages.push(...captured.candidates);
       iterationState = nextState;
       if (nextState.stop) break;
+      const mountedImageCount = rankImageCandidates(allImages).imageUrls.length;
+      if (Number(declaredCount) > 0 && mountedImageCount >= Math.min(Number(declaredCount), LIMITS.imageCount)) {
+        iterationState = { ...iterationState, stop: true, stopReason: "declared gallery count reached" };
+        break;
+      }
+      const controls = galleryControlState(captured.context.galleryRoot);
+      carouselControlsDetected ||= controls.detected;
+      enabledNextControlDetected ||= Boolean(controls.next);
       const next = findNextCarouselButton(captured.context.galleryRoot);
-      if (!next) break;
+      if (!next) {
+        explicitEnd = clickedCarousel || controls.nextDisabled;
+        if (!clickedCarousel) {
+          await delay(200);
+          const recaptured = captureImageCandidates(listingId, step * 1000 + 500);
+          if (recaptured.context) {
+            const before = candidateAssetSet(captured.candidates);
+            const after = candidateAssetSet(recaptured.candidates);
+            stableDom = before.length > 1 && equalStringArrays(before, after);
+            allImages.push(...recaptured.candidates);
+          }
+        }
+        break;
+      }
+      clickedCarousel = true;
       next.click();
-      await delay(250);
+      pendingCapture = await waitForGalleryChange(listingId, captured.primaryIdentity);
     }
 
     const rankedImages = rankImageCandidates(allImages);
-    const incompleteDeclaredGallery = Number(declaredCount) > 0 &&
-      iterationState.seen?.length < Math.min(Number(declaredCount), LIMITS.imageCount);
-    const imageExtractionStatus = galleryContainerIdentity && rankedImages.imageUrls.length
-      ? incompleteDeclaredGallery || iterationState.stopReason === "carousel no change"
-        ? "partial"
-        : "complete"
-      : "unavailable";
+    const completion = classifyRenderedGallery({
+      imageCount: rankedImages.imageUrls.length,
+      declaredCount,
+      wrapped: iterationState.wrapped,
+      explicitEnd,
+      stableDom,
+      galleryConfidence,
+      additionalMediaEvidence: Number(declaredCount) > rankedImages.imageUrls.length || enabledNextControlDetected,
+      galleryFound: Boolean(galleryContainerIdentity)
+    });
     let snapshot = {
       ...captureRenderedSnapshot(listingId, allImages),
-      imageExtractionStatus,
+      imageExtractionStatus: completion.status,
       includeImageDiagnostics: options.debug === true,
       galleryDiagnostics: {
         extractionSource: "rendered-semantic-dom",
         galleryContainerIdentity,
-        declaredCount,
+        declaredPhotoCount: declaredCount,
+        galleryCandidateCount,
+        galleryConfidence,
+        selectedOwnedMediaCount,
+        selectedForeignListingLinkCount,
+        selectedExcludedMediaCount,
+        gallerySearchReachedListingRoot,
+        carouselControlsDetected,
+        enabledNextControlDetected,
+        completionEvidence: completion.evidence,
         wrapped: Boolean(iterationState.wrapped),
         noChangeCount: Number(iterationState.noChangeCount) || 0,
-        stopReason: iterationState.stopReason || null,
+        stopReason: iterationState.stopReason || (stableDom ? "stable owned gallery DOM" : explicitEnd ? "carousel end reached" : "no owned next control"),
         finalImageCount: rankedImages.imageUrls.length
       }
     };
@@ -1069,16 +1366,24 @@
   return {
     LIMITS,
     collectRenderedListingDetails,
+    classifyRenderedGallery,
     extractListingDetails,
     extractRenderedSnapshotDetails,
     facebookAssetIdentity,
     filterOwnedImageCandidates,
+    galleryCandidateConfidence,
     isFacebookImageUrl,
     mergeListingDetails,
+    mediaAssetDimensions,
     needsRenderedFallback,
     nextGalleryIterationState,
+    parseBackgroundImageUrls,
+    parseSrcset,
     parseMileageDetail,
     rankImageCandidates,
-    resolveListingImages
+    resolveListingImages,
+    scoreGalleryCandidate,
+    selectGalleryCandidate,
+    shortPathHash
   };
 });
