@@ -14,6 +14,10 @@ node --check mileage-utils.js
 node --check scanner-lifecycle.js
 node --check scanner-diagnostics.js
 node --check scanner-runtime.js
+node --check scanner-storage.js
+node --check vehicle-catalogue.js
+node --check listing-facts.js
+node --check filter-domain.js
 node --check vehicle-identity.js
 node --check listing-details-extractor.js
 node --check payload-normalizer.js
@@ -24,6 +28,8 @@ node scripts/validate-manifest.js
 `npm run validate` runs the same suite. CI runs it on pushes and pull requests without secrets.
 
 Lifecycle tests cover idle startup, terminal reload, Pause/Resume, explicit interrupted recovery, sync-only recovery, Start/Resume gating, cleanup wiring, and run-scoped controlled-tab cancellation. Runtime tests cover canonical identity, recycled cards, scroll targets/replacement, repeated end confirmation, bounded concurrency, slow-worker isolation, retry caps, and cancellation. Final-category tests cover rendered descriptions, structured attributes, provisional-to-final replacement, counters, target completion, payload status, negation, mixed evidence, and timeout fallback. Identity and mileage suites retain their existing compatibility coverage.
+
+The schema-v2 suites cover canonical fact parsing, all numeric boundaries, mileage inspection, every unknown policy, dependent make/model selection, specification inclusion/exclusion, category modes, keywords, popup structure/persistence, the mirrored catalogue checksum, and packaging of the local Kelmar asset.
 
 Remote-boundary tests also cover exact legacy-origin migration, direct canonical request construction, redirect rejection, Bearer-header preservation, storage rewrite, and unchanged custom dashboard origins.
 

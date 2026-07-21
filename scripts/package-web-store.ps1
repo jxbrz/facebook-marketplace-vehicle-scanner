@@ -17,6 +17,9 @@ $runtimeFiles = @(
   "scanner-diagnostics.js",
   "scanner-runtime.js",
   "scanner-storage.js",
+  "vehicle-catalogue.js",
+  "listing-facts.js",
+  "filter-domain.js",
   "vehicle-identity.js",
   "listing-details-extractor.js",
   "payload-normalizer.js",
@@ -27,7 +30,8 @@ $runtimeFiles = @(
   "icons/icon-16.png",
   "icons/icon-32.png",
   "icons/icon-48.png",
-  "icons/icon-128.png"
+  "icons/icon-128.png",
+  "icons/kelmar-logo.png"
 )
 
 Push-Location $root

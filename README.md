@@ -18,7 +18,8 @@ Facebook Marketplace tab
 - `content.js` coordinates continuous Facebook card discovery/scrolling, cheap filtering, the bounded detail queue, the active-run ledger, progressive uploads, stopping, and recovery.
 - `scanner-runtime.js` provides canonical listing identity, recycled-card recovery, scroll-target/end detection, and bounded queueing; `scanner-diagnostics.js` provides opt-in aggregate development timings.
 - `scanner-lifecycle.js` defines idle/running/paused/interrupted/syncing/terminal rules; only `running` permits Facebook work.
-- `vehicle-identity.js` normalizes optional make/model filters and applies explicit aliases plus token-aware matching.
+- `vehicle-catalogue.js` and `vehicle-identity.js` provide maintained UK make/model data and identity detection without making filter decisions.
+- `listing-facts.js` turns card, static-detail, and rendered-detail evidence into one canonical facts shape; `filter-domain.js` is the sole `match | reject | unresolved` authority.
 - `background.js` owns controlled listing-page requests, one-at-a-time inactive detail-tab fallback, and Bearer-authenticated dashboard requests.
 - `listing-details-extractor.js` first reads bounded listing-ID/canonical-URL scoped embedded data, then extracts semantic rendered sections and listing-owned carousel images when static HTML is incomplete.
 - `category-detector.js` is a pure shared detector loaded by both extension contexts and by Node tests.
@@ -73,8 +74,8 @@ Opening or reloading Facebook never starts or resumes a scan. Settings load whil
 
 1. The extension creates a hosted scan.
 2. It discovers Facebook cards and records them in a durable local ledger.
-3. Card filters run locally; eligible listings are fetched with the existing Facebook session.
-4. Optional accepted make/model filters use structured identity, listing title, trustworthy attributes, then card title. Card and page text are also checked for controlled S/N/C/D wording. Listing-scoped embedded data supplies details first; a queue bounded to two conservatively spaced inactive authenticated item tabs extracts final rendered details, and each tab always closes.
+3. The canonical evaluator may cheaply reject a proven card failure; missing required facts stay unresolved and trigger detail inspection.
+4. Card, static-detail, and rendered-detail evidence all feed the same canonical facts normalizer. The final canonical evaluation applies the versioned saved search, including numeric ranges, dependent make/model selection, specifications, category semantics, keywords, and explicit unknown policies.
 5. Completed outcomes are uploaded in idempotent batches.
 6. Scanning stops at the first target, processed, duration, no-more-results, user, navigation, or error condition.
 7. Pending completed outcomes upload before the hosted scan completes.
@@ -96,6 +97,8 @@ Version 23 adds only optional upload fields. Version 23.0.1 carries optional sou
 
 Version 23.0.2 adds optional accepted make/model arrays to existing JSON scan-filter metadata. Detected advert identity uses bounded vehicle attributes and diagnostics, so no database or API migration is required. Vauxhall and Opel remain distinct; Land Rover and Range Rover are not interchangeable.
 
+The pending 23.1 feature replaces those independent legacy settings with `filterSchemaVersion: 2`. The popup can load an active shared search from the dashboard, keeps a local editable draft in `chrome.storage.local`, and snapshots the complete normalized configuration into each scan. Legacy settings are normalized on read; they are not destructively rewritten in the database.
+
 Use **Clear local state** only after remote completion. See [docs/RECOVERY.md](docs/RECOVERY.md).
 
 ## Category detection
@@ -106,7 +109,7 @@ Explicit `no`, `not`, `never`, and `without` are evaluated in limited local cont
 
 Version 23.0.3 treats card classification as preliminary only. After controlled rendered extraction completes or falls back, the detector runs over trusted static/rendered descriptions, structured title and vehicle attributes, and card evidence. Any final positive S/N/C/D result is rejected before ledger persistence or upload. To reprocess previously misclassified adverts, start a new scan over the same Marketplace search; existing hosted rows remain visible until deliberately cleaned up.
 
-The legacy `excludeCategories` settings key remains present for schema compatibility, but v23.0.3 always rejects positive S/N/C/D disclosures and presents those controls as fixed in the popup.
+The legacy `excludeCategories` settings key remains readable for schema compatibility. Schema v2 maps the legacy exclusion set to `clean_only` and supports `any`, `clean_only`, `category_only`, or an explicit set of clean/Cat S/Cat N/Cat C/Cat D/other/unknown statuses. Missing evidence remains unknown rather than being assumed clean.
 
 This is disclosure detection, not an HPI check.
 

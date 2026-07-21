@@ -59,10 +59,10 @@ test("Retry sync and results opening contain no discovery activation", () => {
   assert.doesNotMatch(open, /activateRunningScan|scheduleScan|autoLoadListings|connectDiscoveryObserver/);
 });
 
-test("fresh scan metadata snapshots accepted makes and models", () => {
+test("fresh scan metadata snapshots the canonical versioned filter config", () => {
   const payload = functionSource("buildScanCreatePayload", "function resetRunMemory");
-  assert.match(payload, /acceptedMakes: settings\.acceptedMakes/);
-  assert.match(payload, /acceptedModels: settings\.acceptedModels/);
+  assert.match(payload, /filters: settings\.activeFilterConfig/);
+  assert.match(source, /FilterDomain\.normaliseFilterConfig/);
 });
 
 test("only freshly inspected Facebook UK mileage receives the label correction", () => {

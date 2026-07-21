@@ -15,6 +15,9 @@ const EXPECTED_FILES = [
   "scanner-diagnostics.js",
   "scanner-runtime.js",
   "scanner-storage.js",
+  "vehicle-catalogue.js",
+  "listing-facts.js",
+  "filter-domain.js",
   "vehicle-identity.js",
   "listing-details-extractor.js",
   "payload-normalizer.js",
@@ -25,7 +28,8 @@ const EXPECTED_FILES = [
   "icons/icon-16.png",
   "icons/icon-32.png",
   "icons/icon-48.png",
-  "icons/icon-128.png"
+  "icons/icon-128.png",
+  "icons/kelmar-logo.png"
 ];
 
 const FORBIDDEN_PATH = /(^|\/)(?:\.git|artifacts?|tests?|fixtures?|docs?|node_modules|scripts?|coverage)(?:\/|$)|\.(?:map|pem|key|env|log)$/i;
@@ -67,7 +71,7 @@ function auditRuntimeFiles(root = process.cwd()) {
     "Content-script version differs from the manifest"
   );
   assert.equal(manifest.host_permissions.some((permission) => permission.includes("*://*/*") || permission === "https://*/*"), false);
-  assert.deepEqual(Object.values(manifest.icons).sort(), EXPECTED_FILES.filter((file) => file.startsWith("icons/")).sort());
+  assert.deepEqual(Object.values(manifest.icons).sort(), EXPECTED_FILES.filter((file) => /^icons\/icon-\d+\.png$/.test(file)).sort());
 }
 
 function listArchive(archive) {

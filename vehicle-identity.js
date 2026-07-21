@@ -236,5 +236,26 @@
     };
   }
 
-  return { canonicalMake, evaluateFilters, normaliseFilterValues, normaliseKey, normaliseMakeFilters };
+  function identifyVehicle(sources, options = {}) {
+    const selectedMakes = normaliseMakeFilters(options.makes);
+    const selectedModels = normaliseFilterValues(options.models);
+    const identity = detectIdentity(sources, selectedMakes, selectedModels);
+    const matchedModel = identity.model
+      ? selectedModels.find(model => tokenPattern(model)?.test(normaliseKey(identity.model))) || null
+      : modelMatch(identity.sourceText, selectedModels);
+    return {
+      detectedMake: identity.make,
+      detectedModel: matchedModel || identity.model,
+      source: identity.source,
+      diagnostics: {
+        detectedMake: identity.make,
+        detectedModel: matchedModel || identity.model,
+        sourceField: identity.source,
+        normalisedCandidate: normaliseKey(identity.sourceText).slice(0, 160),
+        matchingRule: "explicit_alias_and_token_detection_v1"
+      }
+    };
+  }
+
+  return { canonicalMake, evaluateFilters, identifyVehicle, normaliseFilterValues, normaliseKey, normaliseMakeFilters };
 });

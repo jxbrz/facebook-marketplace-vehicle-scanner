@@ -1,0 +1,257 @@
+(function initialiseFilterDomain(root, factory) {
+  const catalogue = typeof module === "object" && module.exports ? require("./vehicle-catalogue.js") : root.VehicleCatalogue;
+  const api = factory(catalogue);
+  if (typeof module === "object" && module.exports) module.exports = api;
+  root.FilterDomain = api;
+})(typeof globalThis === "object" ? globalThis : this, function createFilterDomain(VehicleCatalogue) {
+  "use strict";
+
+  const FILTER_SCHEMA_VERSION = 2;
+  const UNKNOWN_POLICIES = ["inspect_then_reject", "include_with_warning", "exclude", "ignore_filter_for_unknown"];
+  const CATEGORY_STATUSES = ["clean", "cat_s", "cat_n", "cat_c", "cat_d", "other", "unknown"];
+  const CATEGORY_MODES = ["any", "clean_only", "category_only", "selected"];
+  const DEFAULT_UNKNOWN_POLICIES = {
+    price: "inspect_then_reject", mileage: "inspect_then_reject", year: "inspect_then_reject",
+    makeModel: "inspect_then_reject", categoryStatus: "inspect_then_reject",
+    transmission: "include_with_warning", fuelType: "include_with_warning",
+    colour: "include_with_warning", bodyType: "include_with_warning"
+  };
+
+  function integer(value, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    const rounded = Math.round(number);
+    return rounded >= minimum && rounded <= maximum ? rounded : null;
+  }
+
+  function list(value, normaliser = item => String(item || "").trim().toLowerCase()) {
+    const values = Array.isArray(value) ? value : String(value || "").split(/[,\r\n]+/);
+    const output = [];
+    const seen = new Set();
+    for (const item of values) {
+      const normalised = normaliser(item);
+      const key = VehicleCatalogue.key(normalised);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      output.push(normalised);
+      if (output.length >= 50) break;
+    }
+    return output;
+  }
+
+  function selection(value, allowed) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const include = list(source.include || value).filter(item => allowed.includes(item));
+    const exclude = list(source.exclude).filter(item => allowed.includes(item) && !include.includes(item));
+    return { mode: include.length || exclude.length ? "selected" : "any", include, exclude };
+  }
+
+  function policy(value, fallback) {
+    return UNKNOWN_POLICIES.includes(value) ? value : fallback;
+  }
+
+  function normaliseFilterConfig(value = {}) {
+    const source = value && typeof value === "object" ? value : {};
+    const vehicle = source.vehicle || {};
+    const priceMileage = source.priceMileage || {};
+    const specification = source.specification || {};
+    const category = source.category || {};
+    const textFilter = source.text || {};
+    const unknown = source.unknownPolicies || {};
+    const scan = source.scan || {};
+    const makes = VehicleCatalogue.normaliseMakes(vehicle.makes ?? source.acceptedMakes);
+    const rawModels = VehicleCatalogue.normaliseModels(vehicle.models ?? source.acceptedModels, makes);
+    const models = rawModels.filter(model => VehicleCatalogue.isModelCompatible(model, makes));
+    const legacyCategories = list(source.excludedCategories || source.excludeCategories, item => String(item || "").toUpperCase());
+    const suppliedMode = category.mode;
+    const categoryMode = CATEGORY_MODES.includes(suppliedMode)
+      ? suppliedMode
+      : legacyCategories.length ? "clean_only" : "any";
+    const statuses = list(category.statuses).filter(item => CATEGORY_STATUSES.includes(item));
+    return {
+      filterSchemaVersion: FILTER_SCHEMA_VERSION,
+      catalogueVersion: VehicleCatalogue.CATALOGUE_VERSION,
+      vehicle: {
+        makes,
+        models,
+        minYear: integer(vehicle.minYear ?? source.minYear, 1886, 2100),
+        maxYear: integer(vehicle.maxYear ?? source.maxYear, 1886, 2100)
+      },
+      priceMileage: {
+        minPrice: integer(priceMileage.minPrice ?? source.minPrice),
+        maxPrice: integer(priceMileage.maxPrice ?? source.maxPrice),
+        minMileage: integer(priceMileage.minMileage ?? source.minMileage, 0, 1_000_000),
+        maxMileage: integer(priceMileage.maxMileage ?? source.maxMileage, 0, 1_000_000)
+      },
+      specification: {
+        transmissions: selection(specification.transmissions ?? source.transmissions, ["manual", "automatic", "semiautomatic"]),
+        fuelTypes: selection(specification.fuelTypes ?? source.fuelTypes, ["petrol", "diesel", "hybrid", "plug-in hybrid", "electric", "lpg", "other"]),
+        colours: selection(specification.colours ?? source.colours, ["black", "white", "silver", "grey", "blue", "red", "green", "yellow", "orange", "brown", "beige", "purple", "gold", "bronze", "other"]),
+        bodyTypes: selection(specification.bodyTypes ?? source.bodyTypes, ["hatchback", "saloon", "estate", "suv", "coupe", "convertible", "mpv", "pickup", "van", "other"])
+      },
+      category: {
+        mode: categoryMode,
+        statuses: categoryMode === "selected" ? statuses : [],
+        includeRepairedVehicles: Boolean(category.includeRepairedVehicles)
+      },
+      text: {
+        requiredKeywords: list(textFilter.requiredKeywords ?? source.requiredKeywords, item => String(item || "").trim().toLowerCase()),
+        excludedKeywords: list(textFilter.excludedKeywords ?? source.excludedKeywords, item => String(item || "").trim().toLowerCase())
+      },
+      unknownPolicies: {
+        price: policy(unknown.price, DEFAULT_UNKNOWN_POLICIES.price),
+        mileage: policy(unknown.mileage ?? (source.unknownMileagePolicy === "hide" ? "inspect_then_reject" : null), DEFAULT_UNKNOWN_POLICIES.mileage),
+        year: policy(unknown.year, DEFAULT_UNKNOWN_POLICIES.year),
+        makeModel: policy(unknown.makeModel, DEFAULT_UNKNOWN_POLICIES.makeModel),
+        categoryStatus: policy(unknown.categoryStatus, DEFAULT_UNKNOWN_POLICIES.categoryStatus),
+        transmission: policy(unknown.transmission, DEFAULT_UNKNOWN_POLICIES.transmission),
+        fuelType: policy(unknown.fuelType, DEFAULT_UNKNOWN_POLICIES.fuelType),
+        colour: policy(unknown.colour, DEFAULT_UNKNOWN_POLICIES.colour),
+        bodyType: policy(unknown.bodyType, DEFAULT_UNKNOWN_POLICIES.bodyType)
+      },
+      scan: {
+        targetMatches: integer(scan.targetMatches ?? source.targetMatches, 1, 250) ?? 20,
+        maximumProcessed: integer(scan.maximumProcessed ?? source.maximumProcessed, 1, 500) ?? 150,
+        maximumDurationSeconds: integer(scan.maximumDurationSeconds ?? source.maximumDurationSeconds, 30, 3600) ?? 300,
+        autoLoadEnabled: source.autoLoadEnabled ?? scan.autoLoadEnabled ?? true,
+        autoOpenResults: source.autoOpenResults ?? scan.autoOpenResults ?? true
+      }
+    };
+  }
+
+  function validateFilterConfig(value) {
+    const config = normaliseFilterConfig(value);
+    const errors = [];
+    const pairs = [
+      ["Minimum year", config.vehicle.minYear, "Maximum year", config.vehicle.maxYear],
+      ["Minimum price", config.priceMileage.minPrice, "Maximum price", config.priceMileage.maxPrice],
+      ["Minimum mileage", config.priceMileage.minMileage, "Maximum mileage", config.priceMileage.maxMileage]
+    ];
+    for (const [minimumLabel, minimum, maximumLabel, maximum] of pairs) {
+      if (minimum !== null && maximum !== null && minimum > maximum) errors.push(`${minimumLabel} cannot exceed ${maximumLabel.toLowerCase()}.`);
+    }
+    if (config.scan.maximumProcessed < config.scan.targetMatches) errors.push("Maximum listings inspected must be at least target matches.");
+    if (config.category.mode === "selected" && !config.category.statuses.length) errors.push("Select at least one category status.");
+    return { valid: errors.length === 0, errors, config };
+  }
+
+  const LABELS = {
+    price: "Price", mileage: "Mileage", year: "Year", make: "Make", model: "Model",
+    transmission: "Transmission", fuelType: "Fuel type", colour: "Colour", bodyType: "Body type", categoryStatus: "Category status"
+  };
+
+  function formatNumber(value) {
+    return Number(value).toLocaleString("en-GB");
+  }
+
+  function evaluateFilters(facts, inputConfig, options = {}) {
+    const config = normaliseFilterConfig(inputConfig);
+    const phase = options.phase === "prefilter" ? "prefilter" : "final";
+    const rejectionReasons = [];
+    const unresolvedReasons = [];
+    const warnings = [];
+    const missingRequiredFields = [];
+    const evaluatedValues = {};
+
+    function unknown(field, policyName, active) {
+      if (!active) return;
+      const label = LABELS[field];
+      missingRequiredFields.push(field);
+      if (phase === "prefilter") {
+        unresolvedReasons.push(`${label} unavailable on the card; detail inspection required`);
+        return;
+      }
+      const selectedPolicy = config.unknownPolicies[policyName];
+      if (selectedPolicy === "include_with_warning") warnings.push(`${label} unavailable after detail inspection`);
+      if (selectedPolicy === "ignore_filter_for_unknown") warnings.push(`${label} unavailable; filter ignored by saved-search policy`);
+      if (selectedPolicy === "inspect_then_reject" || selectedPolicy === "exclude") {
+        rejectionReasons.push(`${label} unavailable after detail inspection`);
+      }
+    }
+
+    function numeric(field, policyName, minimum, maximum, suffix = "") {
+      const value = facts[field];
+      const active = minimum !== null || maximum !== null;
+      evaluatedValues[field] = value;
+      if (value === null || value === undefined) return unknown(field, policyName, active);
+      if (minimum !== null && value < minimum) rejectionReasons.push(`${LABELS[field]} ${formatNumber(value)}${suffix} is below minimum ${formatNumber(minimum)}${suffix}`);
+      if (maximum !== null && value > maximum) rejectionReasons.push(`${LABELS[field]} ${formatNumber(value)}${suffix} exceeds maximum ${formatNumber(maximum)}${suffix}`);
+    }
+
+    numeric("price", "price", config.priceMileage.minPrice, config.priceMileage.maxPrice, " GBP");
+    numeric("mileage", "mileage", config.priceMileage.minMileage, config.priceMileage.maxMileage, " miles");
+    numeric("year", "year", config.vehicle.minYear, config.vehicle.maxYear);
+
+    const makesActive = config.vehicle.makes.length > 0;
+    const modelsActive = config.vehicle.models.length > 0;
+    evaluatedValues.make = facts.make;
+    evaluatedValues.model = facts.model;
+    if (!facts.make) unknown("make", "makeModel", makesActive);
+    else if (makesActive && !config.vehicle.makes.some(make =>
+      VehicleCatalogue.key(make) === VehicleCatalogue.key(facts.make) ||
+      VehicleCatalogue.key(make) === VehicleCatalogue.key(VehicleCatalogue.OTHER_MAKE) && !VehicleCatalogue.isKnownMake(facts.make)
+    )) {
+      rejectionReasons.push(`Make ${facts.make} is not selected`);
+    }
+    if (!facts.model) unknown("model", "makeModel", modelsActive);
+    else if (modelsActive && !config.vehicle.models.some(model => VehicleCatalogue.key(model) === VehicleCatalogue.key(facts.model))) {
+      rejectionReasons.push(`Model ${facts.model} is not selected`);
+    }
+
+    function selected(field, policyName, selectionConfig) {
+      const value = facts[field];
+      const active = selectionConfig.include.length > 0 || selectionConfig.exclude.length > 0;
+      evaluatedValues[field] = value;
+      if (value === "unknown" || value === null || value === undefined) return unknown(field, policyName, active);
+      if (selectionConfig.include.length && !selectionConfig.include.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is not selected`);
+      if (selectionConfig.exclude.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is excluded`);
+    }
+    selected("transmission", "transmission", config.specification.transmissions);
+    selected("fuelType", "fuelType", config.specification.fuelTypes);
+    selected("colour", "colour", config.specification.colours);
+    selected("bodyType", "bodyType", config.specification.bodyTypes);
+
+    const category = facts.categoryStatus || "unknown";
+    evaluatedValues.categoryStatus = category;
+    evaluatedValues.repairedVehicle = Boolean(facts.repairedVehicle);
+    const categoryActive = config.category.mode !== "any";
+    if (category === "unknown") unknown("categoryStatus", "categoryStatus", categoryActive && !(config.category.mode === "selected" && config.category.statuses.includes("unknown")));
+    if (config.category.mode === "clean_only" && category !== "clean" && category !== "unknown") rejectionReasons.push(`Category status ${category.replace("cat_", "Cat ").toUpperCase()} is not clean`);
+    if (config.category.mode === "category_only" && !["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)) rejectionReasons.push(`Category status ${category} is not a confirmed category vehicle`);
+    if (config.category.mode === "selected" && category !== "unknown" && !config.category.statuses.includes(category)) rejectionReasons.push(`Category status ${category.replace("cat_", "Cat ")} is not selected`);
+    if (facts.repairedVehicle && !config.category.includeRepairedVehicles) rejectionReasons.push("Advert is described as repaired, but repaired vehicles are not included");
+
+    const corpus = String(facts.textCorpus || "").toLowerCase();
+    for (const keyword of config.text.requiredKeywords) if (!corpus.includes(keyword)) rejectionReasons.push(`Required keyword “${keyword}” was not found`);
+    for (const keyword of config.text.excludedKeywords) if (corpus.includes(keyword)) rejectionReasons.push(`Excluded keyword “${keyword}” found`);
+
+    const unique = values => [...new Set(values)];
+    const rejected = unique(rejectionReasons);
+    const unresolved = unique(unresolvedReasons);
+    return {
+      decision: rejected.length ? "reject" : unresolved.length ? "unresolved" : "match",
+      rejectionReasons: rejected,
+      unresolvedReasons: unresolved,
+      warnings: unique(warnings),
+      evaluatedValues,
+      missingRequiredFields: unique(missingRequiredFields),
+      diagnostics: {
+        filterSchemaVersion: config.filterSchemaVersion,
+        catalogueVersion: config.catalogueVersion,
+        phase,
+        unknownPolicies: config.unknownPolicies,
+        categoryEvidence: facts.categoryEvidence || null
+      }
+    };
+  }
+
+  function filterFingerprint(value) {
+    return JSON.stringify(normaliseFilterConfig(value));
+  }
+
+  return {
+    CATEGORY_MODES, CATEGORY_STATUSES, DEFAULT_UNKNOWN_POLICIES, FILTER_SCHEMA_VERSION, UNKNOWN_POLICIES,
+    evaluateFilters, filterFingerprint, normaliseFilterConfig, validateFilterConfig
+  };
+});
