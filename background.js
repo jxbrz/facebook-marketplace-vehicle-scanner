@@ -4,15 +4,23 @@ const MAX_CONCURRENT_REQUESTS = 3;
 const MIN_START_GAP_MS = 350;
 const REQUEST_TIMEOUT_MS = 15000;
 const RENDERED_INSPECTION_TIMEOUT_MS = 12000;
+const MAX_CONCURRENT_RENDERED_INSPECTIONS = 2;
+const MIN_RENDERED_START_GAP_MS = 750;
 
 const pendingJobs = [];
 const jobsByUrl = new Map();
 const controlledDetailTabIds = new Set();
+const controlledDetailTabTokens = new Map();
+const cancelledInspectionTokens = new Set();
+const inspectionControllersByToken = new Map();
 
 let activeRequests = 0;
 let lastRequestStartedAt = 0;
 let pumpTimer = null;
-let renderedInspectionChain = Promise.resolve();
+let activeRenderedInspections = 0;
+let lastRenderedInspectionStartedAt = 0;
+let renderedPumpTimer = null;
+const pendingRenderedInspections = [];
 
 function waitForTabComplete(tabId) {
   return new Promise((resolve, reject) => {
@@ -43,17 +51,20 @@ function waitForTabComplete(tabId) {
   });
 }
 
-async function requestRenderedDetails(tabId, listingId) {
+async function requestRenderedDetails(tabId, listingId, runToken, debug = false) {
   let lastError = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
+    assertInspectionActive(runToken);
     try {
       const response = await chrome.tabs.sendMessage(tabId, {
         type: "EXTRACT_RENDERED_LISTING_DETAILS",
-        listingId
+        listingId,
+        debug
       });
       if (!response?.ok) throw new Error(response?.error || "Rendered extractor returned no result.");
       return response.result;
     } catch (error) {
+      assertInspectionActive(runToken);
       lastError = error;
       await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -61,28 +72,72 @@ async function requestRenderedDetails(tabId, listingId) {
   throw lastError || new Error("Rendered extractor was unavailable.");
 }
 
-async function inspectRenderedListing(url, listingId) {
+function assertInspectionActive(runToken) {
+  if (runToken && cancelledInspectionTokens.has(runToken)) {
+    throw new Error("Listing inspection was cancelled.");
+  }
+}
+
+async function inspectRenderedListing(url, listingId, runToken, debug = false) {
   let tabId = null;
   try {
+    assertInspectionActive(runToken);
     const tab = await chrome.tabs.create({ url: "about:blank", active: false });
     if (!Number.isInteger(tab.id)) throw new Error("Rendered inspection tab was not created.");
     tabId = tab.id;
     controlledDetailTabIds.add(tabId);
+    controlledDetailTabTokens.set(tabId, runToken || null);
     await chrome.tabs.update(tabId, { url });
     await waitForTabComplete(tabId);
-    return await requestRenderedDetails(tabId, listingId);
+    assertInspectionActive(runToken);
+    const result = await requestRenderedDetails(tabId, listingId, runToken, debug);
+    assertInspectionActive(runToken);
+    return result;
   } finally {
     if (tabId !== null) {
       controlledDetailTabIds.delete(tabId);
+      controlledDetailTabTokens.delete(tabId);
       await chrome.tabs.remove(tabId).catch(() => {});
     }
   }
 }
 
-function queueRenderedInspection(url, listingId) {
-  const inspection = renderedInspectionChain.then(() => inspectRenderedListing(url, listingId));
-  renderedInspectionChain = inspection.catch(() => {});
-  return inspection;
+function scheduleRenderedPump(delay = 0) {
+  if (renderedPumpTimer !== null) return;
+  renderedPumpTimer = setTimeout(() => {
+    renderedPumpTimer = null;
+    pumpRenderedInspections();
+  }, delay);
+}
+
+function pumpRenderedInspections() {
+  while (
+    activeRenderedInspections < MAX_CONCURRENT_RENDERED_INSPECTIONS &&
+    pendingRenderedInspections.length
+  ) {
+    const elapsed = Date.now() - lastRenderedInspectionStartedAt;
+    if (elapsed < MIN_RENDERED_START_GAP_MS) {
+      scheduleRenderedPump(MIN_RENDERED_START_GAP_MS - elapsed);
+      return;
+    }
+
+    const job = pendingRenderedInspections.shift();
+    activeRenderedInspections += 1;
+    lastRenderedInspectionStartedAt = Date.now();
+    inspectRenderedListing(job.url, job.listingId, job.runToken, job.debug)
+      .then(job.resolve, job.reject)
+      .finally(() => {
+        activeRenderedInspections -= 1;
+        scheduleRenderedPump();
+      });
+  }
+}
+
+function queueRenderedInspection(url, listingId, runToken, debug = false) {
+  return new Promise((resolve, reject) => {
+    pendingRenderedInspections.push({ url, listingId, runToken, debug, resolve, reject });
+    scheduleRenderedPump();
+  });
 }
 
 function decodeHtmlEntities(value) {
@@ -121,6 +176,13 @@ function normaliseForDetection(html) {
 
 function extractCategory(text, source) {
   return CategoryDetector.detectCategory(text, { source });
+}
+
+function vehicleAttributeEvidence(attributes) {
+  return Object.entries(attributes || {})
+    .slice(0, 40)
+    .map(([label, value]) => `${String(label).slice(0, 80)}: ${String(value).slice(0, 500)}`)
+    .join("\n");
 }
 
 function extractMileage(text) {
@@ -269,8 +331,13 @@ function buildEvidence(text, matchText) {
   return text.slice(start, end).replace(/\s+/g, " ").trim();
 }
 
-async function fetchWithTimeout(url) {
+async function fetchWithTimeout(url, runToken) {
   const controller = new AbortController();
+  if (runToken) {
+    const controllers = inspectionControllersByToken.get(runToken) || new Set();
+    controllers.add(controller);
+    inspectionControllersByToken.set(runToken, controllers);
+  }
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
@@ -286,11 +353,17 @@ async function fetchWithTimeout(url) {
     });
   } finally {
     clearTimeout(timeout);
+    if (runToken) {
+      const controllers = inspectionControllersByToken.get(runToken);
+      controllers?.delete(controller);
+      if (!controllers?.size) inspectionControllersByToken.delete(runToken);
+    }
   }
 }
 
-async function inspectListing(url) {
-  const response = await fetchWithTimeout(url);
+async function inspectListing(url, runToken, debug = false) {
+  assertInspectionActive(runToken);
+  const response = await fetchWithTimeout(url, runToken);
 
   if (!response.ok) {
     throw new Error(`Facebook returned HTTP ${response.status}`);
@@ -298,29 +371,57 @@ async function inspectListing(url) {
 
   const html = await response.text();
   const listingId = getListingIdFromUrl(url);
-  let listingDetails = ListingDetailsExtractor.extractListingDetails(html, {
+  const staticListingDetails = ListingDetailsExtractor.extractListingDetails(html, {
     listingId,
-    canonicalUrl: response.url || url
+    canonicalUrl: response.url || url,
+    debug
   });
-  if (listingId && ListingDetailsExtractor.needsRenderedFallback(listingDetails)) {
+  let renderedListingDetails = null;
+  let listingDetails = staticListingDetails;
+  if (listingId) {
     try {
-      const renderedDetails = await queueRenderedInspection(response.url || url, listingId);
-      listingDetails = ListingDetailsExtractor.mergeListingDetails(listingDetails, renderedDetails);
+      assertInspectionActive(runToken);
+      renderedListingDetails = await queueRenderedInspection(response.url || url, listingId, runToken, debug);
+      listingDetails = ListingDetailsExtractor.mergeListingDetails(staticListingDetails, renderedListingDetails);
     } catch {
       // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
+      if (debug) {
+        listingDetails = {
+          ...staticListingDetails,
+          imageDiagnostics: {
+            ...(staticListingDetails.imageDiagnostics || {}),
+            renderedInspectionFailed: true
+          }
+        };
+      }
     }
   }
   const scoped = extractScopedText(html, listingId);
 
-  let category = extractCategory(scoped.text, "facebook-listing-page");
+  const scopedCategoryText = scoped.source === "listing-id-window" ? scoped.text : "";
+  const preliminaryCategory = CategoryDetector.detectTrustedEvidence([
+    { text: scopedCategoryText, source: "facebook-listing-static-scoped" },
+    { text: staticListingDetails.fullDescription, source: "facebook-structured-description" },
+    { text: staticListingDetails.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(staticListingDetails.vehicleAttributes), source: "facebook-structured-attributes" }
+  ]);
+  const category = CategoryDetector.detectTrustedEvidence([
+    { text: scopedCategoryText, source: "facebook-listing-static-scoped" },
+    { text: staticListingDetails.fullDescription, source: "facebook-structured-description" },
+    { text: staticListingDetails.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(staticListingDetails.vehicleAttributes), source: "facebook-structured-attributes" },
+    { text: renderedListingDetails?.fullDescription, source: "facebook-rendered-description" },
+    { text: renderedListingDetails?.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(renderedListingDetails?.vehicleAttributes), source: "facebook-rendered-attributes" }
+  ]);
   let metadata = extractVehicleMetadata(scoped.text);
   let extractionSource = scoped.source;
   let extractionText = scoped.text;
   const hasCategoryEvidence = [
-    ...(category.evidence || []),
-    ...(category.negatedEvidence || []),
-    ...(category.ambiguousEvidence || []),
-    ...(category.excludedEvidence || [])
+    ...(preliminaryCategory.evidence || []),
+    ...(preliminaryCategory.negatedEvidence || []),
+    ...(preliminaryCategory.ambiguousEvidence || []),
+    ...(preliminaryCategory.excludedEvidence || [])
   ].length > 0;
 
   const scopedDataCount = [
@@ -333,12 +434,12 @@ async function inspectListing(url) {
 
   if (scopedDataCount === 0 && scoped.source === "listing-id-window") {
     extractionText = normaliseForDetection(html);
-    category = extractCategory(extractionText, "facebook-listing-page");
     metadata = extractVehicleMetadata(extractionText);
     extractionSource = "full-response-fallback";
   }
 
   const evidenceExcerpt = buildEvidence(extractionText, category.match);
+  assertInspectionActive(runToken);
 
   return {
     ...category,
@@ -348,6 +449,18 @@ async function inspectListing(url) {
     evidenceExcerpt,
     extractionSource,
     listingDetailExtractionSource: listingDetails.extractionSource,
+    categoryClassificationDiagnostics: {
+      preliminaryCategoryResult: CategoryDetector.summariseCategoryResult(preliminaryCategory),
+      finalCategoryResult: CategoryDetector.summariseCategoryResult(category),
+      finalCategoryEvidenceSource: category.source || null,
+      reclassifiedAfterRenderedExtraction: Boolean(
+        !preliminaryCategory.detected &&
+        category.detected &&
+        category.evidence?.some(item => ["facebook-rendered-description", "facebook-rendered-attributes"].includes(item.source))
+      ),
+      provisionalStatus: preliminaryCategory.detected ? "rejected" : "matched",
+      finalStatus: category.detected ? "rejected" : "matched"
+    },
     scopeLength: extractionText.length,
     finalUrl: response.url,
     responseLength: html.length,
@@ -381,7 +494,7 @@ function pumpQueue() {
     activeRequests += 1;
     lastRequestStartedAt = Date.now();
 
-    inspectListing(job.url)
+    inspectListing(job.url, job.runToken, job.debug)
       .then(result => {
         for (const listener of job.listeners) {
           listener.resolve(result);
@@ -394,18 +507,24 @@ function pumpQueue() {
       })
       .finally(() => {
         activeRequests -= 1;
-        jobsByUrl.delete(job.url);
+        jobsByUrl.delete(job.key);
         schedulePump();
       });
   }
 }
 
-function queueInspection(url, priority = 0) {
+function queueInspection(url, priority = 0, runToken = null, debug = false) {
   return new Promise((resolve, reject) => {
-    const existing = jobsByUrl.get(url);
+    if (runToken && cancelledInspectionTokens.has(runToken)) {
+      reject(new Error("Listing inspection was cancelled."));
+      return;
+    }
+    const key = `${runToken || "legacy"}:${url}`;
+    const existing = jobsByUrl.get(key);
 
     if (existing) {
       existing.listeners.push({ resolve, reject });
+      existing.debug = existing.debug || debug;
 
       if (priority > existing.priority && !existing.started) {
         existing.priority = priority;
@@ -416,21 +535,66 @@ function queueInspection(url, priority = 0) {
     }
 
     const job = {
+      key,
       url,
+      runToken,
       priority,
+      debug,
       listeners: [{ resolve, reject }],
       started: false
     };
 
-    jobsByUrl.set(url, job);
+    jobsByUrl.set(key, job);
     pendingJobs.push(job);
     pendingJobs.sort((a, b) => b.priority - a.priority);
     schedulePump();
   });
 }
 
+async function cancelScanInspections(runToken) {
+  if (!runToken) return { cancelledJobs: 0, closedTabs: 0 };
+  cancelledInspectionTokens.add(runToken);
+  for (const controller of inspectionControllersByToken.get(runToken) || []) controller.abort();
+  inspectionControllersByToken.delete(runToken);
+  while (cancelledInspectionTokens.size > 100) {
+    cancelledInspectionTokens.delete(cancelledInspectionTokens.values().next().value);
+  }
+  let cancelledJobs = 0;
+  for (let index = pendingJobs.length - 1; index >= 0; index -= 1) {
+    const job = pendingJobs[index];
+    if (job.runToken !== runToken || job.started) continue;
+    pendingJobs.splice(index, 1);
+    jobsByUrl.delete(job.key);
+    for (const listener of job.listeners) listener.reject(new Error("Listing inspection was cancelled."));
+    cancelledJobs += 1;
+  }
+  for (let index = pendingRenderedInspections.length - 1; index >= 0; index -= 1) {
+    const job = pendingRenderedInspections[index];
+    if (job.runToken !== runToken) continue;
+    pendingRenderedInspections.splice(index, 1);
+    job.reject(new Error("Listing inspection was cancelled."));
+    cancelledJobs += 1;
+  }
+  const tabIds = [...controlledDetailTabTokens.entries()]
+    .filter(([, token]) => token === runToken)
+    .map(([tabId]) => tabId);
+  await Promise.all(tabIds.map(tabId => chrome.tabs.remove(tabId).catch(() => {})));
+  return { cancelledJobs, closedTabs: tabIds.length };
+}
+
 const REMOTE_REQUEST_TIMEOUT_MS = 20000;
 const MAX_REMOTE_BATCH_SIZE = 25;
+const CANONICAL_DASHBOARD_ORIGIN = "https://sourcing.kelmarvehiclesltd.co.uk";
+const LEGACY_DASHBOARD_ORIGIN = "https://facebook-web-filter.vercel.app";
+
+function canonicaliseLegacyDashboardUrl(parsed) {
+  if (parsed.origin !== LEGACY_DASHBOARD_ORIGIN) return parsed;
+
+  return new URL(
+    `${parsed.pathname}${parsed.search}${parsed.hash}`,
+    `${CANONICAL_DASHBOARD_ORIGIN}/`
+  );
+}
 
 function normaliseDashboardUrl(value) {
   const trimmed = String(value || "").trim().replace(/\/+$/, "");
@@ -451,6 +615,8 @@ function normaliseDashboardUrl(value) {
     throw new Error("Dashboard URL must use HTTPS or HTTP.");
   }
 
+  parsed = canonicaliseLegacyDashboardUrl(parsed);
+
   return parsed.toString().replace(/\/$/, "");
 }
 
@@ -462,6 +628,10 @@ async function getRemoteConfig() {
 
   const dashboardUrl = normaliseDashboardUrl(stored.dashboardUrl);
   const token = String(stored.extensionApiToken || "").trim();
+
+  if (dashboardUrl !== String(stored.dashboardUrl || "").trim().replace(/\/+$/, "")) {
+    await chrome.storage.local.set({ dashboardUrl });
+  }
 
   if (!token) {
     throw new Error("Extension API token is not configured.");
@@ -489,7 +659,7 @@ async function remoteRequest(path, options = {}) {
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
       cache: "no-store",
-      redirect: "follow",
+      redirect: "error",
       signal: controller.signal
     });
 
@@ -537,7 +707,9 @@ async function remoteRequest(path, options = {}) {
 function normaliseResultsUrl(resultsUrl, dashboardUrl, scanId) {
   if (resultsUrl) {
     try {
-      return new URL(resultsUrl, `${dashboardUrl}/`).toString();
+      return canonicaliseLegacyDashboardUrl(
+        new URL(resultsUrl, `${dashboardUrl}/`)
+      ).toString();
     } catch {
       // Fall through to the standard scan route.
     }
@@ -668,7 +840,7 @@ function openExternalUrl(url) {
     throw new Error("Only HTTP and HTTPS results URLs can be opened.");
   }
 
-  return chrome.tabs.create({ url: parsed.toString() });
+  return chrome.tabs.create({ url: canonicaliseLegacyDashboardUrl(parsed).toString() });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -688,8 +860,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "INSPECT_LISTING" && message.url) {
     return respond(
-      queueInspection(message.url, Number(message.priority) || 0)
+      queueInspection(message.url, Number(message.priority) || 0, message.runToken || null, message.debug === true)
     );
+  }
+
+  if (message?.type === "CANCEL_SCAN_INSPECTIONS") {
+    return respond(cancelScanInspections(message.runToken));
   }
 
   if (message?.type === "IS_CONTROLLED_DETAIL_TAB") {

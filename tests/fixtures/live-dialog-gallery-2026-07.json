@@ -1,0 +1,68 @@
+{
+  "pageMode": {
+    "visibleDialogs": 1,
+    "visibleMainRegions": 0
+  },
+  "galleryCandidates": [
+    {
+      "identity": "largest-image-parent",
+      "depthFromPrimary": 1,
+      "containsPrimary": true,
+      "ownedMediaCount": 1,
+      "largeMediaCount": 1,
+      "repeatedSizeCount": 1,
+      "excludedMediaCount": 0,
+      "nextControlCount": 0,
+      "previousControlCount": 0,
+      "declaredCount": null,
+      "foreignListingLinkCount": 0,
+      "isListingRoot": false
+    },
+    {
+      "identity": "cohesive-gallery-ancestor",
+      "depthFromPrimary": 4,
+      "containsPrimary": true,
+      "ownedMediaCount": 12,
+      "largeMediaCount": 2,
+      "repeatedSizeCount": 10,
+      "excludedMediaCount": 0,
+      "nextControlCount": 0,
+      "previousControlCount": 0,
+      "declaredCount": null,
+      "foreignListingLinkCount": 0,
+      "isListingRoot": false
+    },
+    {
+      "identity": "dialog-with-ancillary-media",
+      "depthFromPrimary": 7,
+      "containsPrimary": true,
+      "ownedMediaCount": 12,
+      "largeMediaCount": 2,
+      "repeatedSizeCount": 10,
+      "excludedMediaCount": 3,
+      "nextControlCount": 0,
+      "previousControlCount": 0,
+      "declaredCount": null,
+      "foreignListingLinkCount": 0,
+      "isListingRoot": true
+    }
+  ],
+  "expectedGalleryIdentity": "cohesive-gallery-ancestor",
+  "imageCandidates": [
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-01.jpg", "width": 1600, "height": 900, "order": 0, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-02.jpg", "width": 800, "height": 600, "order": 1, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-03.jpg", "width": 800, "height": 600, "order": 2, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-04.jpg", "width": 800, "height": 600, "order": 3, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-05.jpg", "width": 800, "height": 600, "order": 4, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-06.jpg", "width": 800, "height": 600, "order": 5, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-07.jpg", "width": 800, "height": 600, "order": 6, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-08.jpg", "width": 800, "height": 600, "order": 7, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-09.jpg", "width": 800, "height": 600, "order": 8, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-10.jpg", "width": 800, "height": 600, "order": 9, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-11.jpg", "width": 800, "height": 600, "order": 10, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/live-car-12.jpg", "width": 800, "height": 600, "order": 11, "insideGallery": true, "listingOwned": true },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/seller-avatar.jpg", "width": 80, "height": 80, "order": 12, "insideGallery": false, "listingOwned": true, "ancestryCategory": "seller" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/recommended-car.jpg", "width": 320, "height": 180, "order": 13, "insideGallery": false, "listingOwned": false, "foreignListingId": "foreign" },
+    { "url": "https://scontent-lhr8-1.xx.fbcdn.net/navigation-icon.jpg", "width": 48, "height": 48, "order": 14, "insideGallery": false, "listingOwned": true, "ancestryCategory": "ui" }
+  ]
+}

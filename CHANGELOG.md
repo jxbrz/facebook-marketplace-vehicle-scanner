@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased (recommended 23.0.7)
+
+- Migrated recovery state to compact schema 20 while retaining the established `scannerV19:activeRun` key and preserving pending failed uploads, settings, and authentication.
+- Removed full successful results, descriptions, and gallery arrays immediately after confirmed dashboard upload; retired unbounded 30-day per-listing caches.
+- Added redacted UTF-8 storage measurement, bounded completed markers, safe quota prune/retry/degraded handling, storage-health UI, and migration/quota/image regression coverage.
+
+- Separated continuous discovery/auto-scroll from bounded detail processing so slow rendered listings and dashboard uploads cannot hold the page stationary.
+- Added canonical-ID lifecycle queueing, one bounded transient retry, recycled-DOM recovery, closer scroll-target selection, mutation/height growth detection, and repeated end-of-results confirmation.
+- Increased only the rendered-detail stage from one to two conservatively spaced workers, retained three total listing workers and the 12-item committed-work cap, and bounded automatic upload retries.
+- Added explicit Pause/Resume cleanup, development-only aggregate timing diagnostics, and scrolling/queue/deduplication regression coverage without changing permissions, authentication, API payloads, or production data.
+
+## 23.0.5 - 2026-07-15
+
+- Migrated the exact legacy Vercel dashboard origin stored by existing installations to `https://sourcing.kelmarvehiclesltd.co.uk` before any authenticated API request or results-page navigation.
+- Made the canonical production origin the new-install default and rejected API redirects so Bearer-authenticated requests cannot depend on a hostname redirect.
+- Retained the exact legacy host permission for this staged migration release while preserving the manifest key, extension identity, scanner lifecycle, storage schema, and API authentication format.
+
+## 23.0.4
+
+- Prepared the first Chrome Web Store package without changing scanner behavior, storage keys, API payloads, or the fixed unpacked key.
+- Replaced the broad all-HTTPS host grant with exact Facebook and production dashboard hosts.
+- Added local extension icons, a narrow store-facing name/description, support homepage, strict package audit, and submission documentation.
+
+## 23.0.3 - 2026-07-15
+
+- Re-ran insurance-category classification over final trusted evidence after controlled rendered extraction and merge, including final descriptions, structured titles, vehicle attributes, and card evidence.
+- Prevented provisional card acceptance from becoming durable before the final category gate; final rejected outcomes now drive counters, target completion, persistence, and uploads.
+- Added bounded preliminary/final category diagnostics and preserved rendered evidence without storing page HTML.
+- Attempted controlled rendered extraction for every listing ID, with safe static/card fallback after timeout or failure.
+- Documented deliberate rescan as the safe reprocessing path; existing historical rows are not mutated automatically.
+
+## 23.0.2 - 2026-07-15
+
+- Changed startup to strict idle-first behavior: persisted running work becomes `interrupted` and requires explicit Resume or Discard instead of auto-resuming discovery or scrolling.
+- Limited discovery, observers, timers, auto-scroll, extraction queues, and controlled detail tabs to the explicit running state, with run-scoped cancellation and bounded lifecycle diagnostics.
+- Kept terminal scans terminal; startup sync recovery may upload durable final outcomes but cannot create replacement scans or restart Facebook activity.
+- Added optional accepted make/model filters with explicit aliases, token-aware conservative matching, deterministic rejection diagnostics, and settings snapshots.
+- Stored detected advert identity through the existing bounded vehicle attributes and raw metadata without changing the dashboard API contract.
+- Corrected Facebook Marketplace UK mileage labelled `km` to operational miles without changing the numeric value, while preserving the source text and recording `facebook_uk_label_correction` provenance.
+
 ## 23.0.1 - 2026-07-15
 
 - Added bounded listing-scoped ancestor traversal and semantic rendered-DOM fallback for descriptions and vehicle facts when Facebook's initial HTML is incomplete.

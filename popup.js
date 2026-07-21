@@ -1,5 +1,17 @@
+const CANONICAL_DASHBOARD_ORIGIN = "https://sourcing.kelmarvehiclesltd.co.uk";
+const LEGACY_DASHBOARD_ORIGIN = "https://facebook-web-filter.vercel.app";
+
+function canonicaliseLegacyDashboardUrl(parsed) {
+  if (parsed.origin !== LEGACY_DASHBOARD_ORIGIN) return parsed;
+
+  return new URL(
+    `${parsed.pathname}${parsed.search}${parsed.hash}`,
+    `${CANONICAL_DASHBOARD_ORIGIN}/`
+  );
+}
+
 const DEFAULTS = {
-  dashboardUrl: "",
+  dashboardUrl: CANONICAL_DASHBOARD_ORIGIN,
   extensionApiToken: "",
   autoLoadEnabled: true,
   autoOpenResults: true,
@@ -13,7 +25,9 @@ const DEFAULTS = {
   maxMileage: null,
   unknownMileagePolicy: "keep",
   excludeCategories: ["S", "N", "C", "D"],
-  excludedKeywords: []
+  excludedKeywords: [],
+  acceptedMakes: [],
+  acceptedModels: []
 };
 
 const elements = {
@@ -31,12 +45,20 @@ const elements = {
   maxPrice: document.querySelector("#maxPrice"),
   maxMileage: document.querySelector("#maxMileage"),
   unknownMileagePolicy: document.querySelector("#unknownMileagePolicy"),
+  acceptedMakes: document.querySelector("#acceptedMakes"),
+  acceptedModels: document.querySelector("#acceptedModels"),
   excludedKeywords: document.querySelector("#excludedKeywords"),
   startScan: document.querySelector("#startScan"),
+  pauseScan: document.querySelector("#pauseScan"),
   stopScan: document.querySelector("#stopScan"),
   openResults: document.querySelector("#openResults"),
   retrySync: document.querySelector("#retrySync"),
   clearState: document.querySelector("#clearState"),
+  recoveryActions: document.querySelector("#recoveryActions"),
+  recoveryTitle: document.querySelector("#recoveryTitle"),
+  recoveryText: document.querySelector("#recoveryText"),
+  resumeScan: document.querySelector("#resumeScan"),
+  discardScan: document.querySelector("#discardScan"),
   status: document.querySelector("#status"),
   discovered: document.querySelector("#discovered"),
   processed: document.querySelector("#processed"),
@@ -67,7 +89,15 @@ function getKeywords() {
 }
 
 function normaliseDashboardUrl(value) {
-  return value.trim().replace(/\/+$/, "");
+  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+
+  try {
+    return canonicaliseLegacyDashboardUrl(new URL(trimmed))
+      .toString()
+      .replace(/\/$/, "");
+  } catch {
+    return trimmed;
+  }
 }
 
 async function getActiveMarketplaceTab() {
@@ -106,7 +136,7 @@ async function saveSettings() {
   const token = elements.extensionApiToken.value.trim();
 
   if (!dashboardUrl) {
-    throw new Error("Enter the Vercel dashboard URL.");
+    throw new Error("Enter the hosted dashboard URL.");
   }
 
   let parsed;
@@ -151,7 +181,9 @@ async function saveSettings() {
     maxMileage: valueOrNull(elements.maxMileage),
     unknownMileagePolicy: elements.unknownMileagePolicy.value,
     excludeCategories: getSelectedCategories(),
-    excludedKeywords: getKeywords()
+    excludedKeywords: getKeywords(),
+    acceptedMakes: VehicleIdentity.normaliseMakeFilters(elements.acceptedMakes.value),
+    acceptedModels: VehicleIdentity.normaliseFilterValues(elements.acceptedModels.value)
   };
 
   await chrome.storage.local.set(next);
@@ -165,6 +197,8 @@ function reasonLabel(reason) {
     duration_limit_reached: "time limit reached",
     no_more_results: "no more results found",
     user_stopped: "stopped by user",
+    storage_soft_limit: "paused to protect local recovery data",
+    storage_quota: "paused because resume protection is unavailable",
     extension_closed: "interrupted after navigation or restart",
     error: "scanner error"
   };
@@ -181,9 +215,31 @@ function updateProgress(progress) {
   elements.unavailable.textContent = progress?.unavailable ?? 0;
   elements.pending.textContent = progress?.pending ?? 0;
 
-  elements.stopScan.disabled = !progress?.scanningActive;
+  elements.pauseScan.disabled = !progress?.scanningActive;
+  elements.stopScan.disabled = !progress?.scanningActive && !progress?.paused;
   elements.openResults.disabled = !progress?.resultsUrl;
   elements.retrySync.disabled = !progress?.canRetrySync;
+  elements.startScan.disabled = Boolean(progress?.canResume);
+  elements.recoveryActions.hidden = !progress?.canResume;
+  elements.discardScan.hidden = Boolean(progress?.paused);
+  elements.recoveryTitle.textContent = progress?.paused
+    ? "Scan paused"
+    : "Interrupted scan found";
+  elements.recoveryText.textContent = progress?.paused
+    ? "Discovery, scrolling, and new listing work are stopped. Resume or stop this scan."
+    : "Resume explicitly or discard only this interrupted run.";
+
+  if (progress?.storageHealth?.persistenceDegraded) {
+    elements.status.textContent =
+      "Scan paused because local resume protection is temporarily unavailable. Retry sync or reload after cleanup.";
+    return;
+  }
+
+  if (progress?.storageHealth?.nearSoftLimit) {
+    elements.status.textContent =
+      "Scanner local recovery storage is nearly full. Uploaded results are being cleaned automatically.";
+    return;
+  }
 
   if (!progress?.scanId) {
     elements.status.textContent = "Ready to start a new hosted scan.";
@@ -204,6 +260,16 @@ function updateProgress(progress) {
     return;
   }
 
+  if (progress.interrupted) {
+    elements.status.textContent = "Interrupted scan found. Choose Resume scan or Discard scan.";
+    return;
+  }
+
+  if (progress.paused) {
+    elements.status.textContent = "Scan paused. Choose Resume scan or Stop.";
+    return;
+  }
+
   const reason = reasonLabel(progress.stopReason);
   elements.status.textContent =
     `${progress.scanStatus}${reason ? ` — ${reason}` : ""}. ` +
@@ -212,8 +278,13 @@ function updateProgress(progress) {
 
 async function initialise() {
   const stored = await chrome.storage.local.get(DEFAULTS);
+  const dashboardUrl = normaliseDashboardUrl(stored.dashboardUrl);
 
-  elements.dashboardUrl.value = stored.dashboardUrl || "";
+  if (dashboardUrl !== stored.dashboardUrl) {
+    await chrome.storage.local.set({ dashboardUrl });
+  }
+
+  elements.dashboardUrl.value = dashboardUrl;
   elements.extensionApiToken.value = stored.extensionApiToken || "";
   elements.extensionOrigin.textContent = `chrome-extension://${chrome.runtime.id}`;
   elements.autoLoadEnabled.checked = Boolean(stored.autoLoadEnabled);
@@ -228,11 +299,12 @@ async function initialise() {
   elements.maxPrice.value = stored.maxPrice ?? "";
   elements.maxMileage.value = stored.maxMileage ?? "";
   elements.unknownMileagePolicy.value = stored.unknownMileagePolicy ?? "keep";
+  elements.acceptedMakes.value = VehicleIdentity.normaliseMakeFilters(stored.acceptedMakes).join(", ");
+  elements.acceptedModels.value = VehicleIdentity.normaliseFilterValues(stored.acceptedModels).join(", ");
   elements.excludedKeywords.value = (stored.excludedKeywords ?? []).join("\n");
 
-  const selected = new Set(stored.excludeCategories ?? ["S", "N", "C", "D"]);
   for (const input of document.querySelectorAll(".category")) {
-    input.checked = selected.has(input.value);
+    input.checked = true;
   }
 
   updateProgress(stored.runtimeProgress);
@@ -271,13 +343,43 @@ elements.stopScan.addEventListener("click", async () => {
   }
 });
 
+elements.pauseScan.addEventListener("click", async () => {
+  try {
+    elements.status.textContent = "Pausing scan…";
+    updateProgress(await sendToActiveTab({ type: "PAUSE_SCAN" }));
+  } catch (error) {
+    elements.status.textContent = error.message || String(error);
+  }
+});
+
+elements.resumeScan.addEventListener("click", async () => {
+  try {
+    elements.status.textContent = "Resuming scan…";
+    updateProgress(await sendToActiveTab({ type: "RESUME_SCAN" }));
+  } catch (error) {
+    elements.status.textContent = error.message || String(error);
+  }
+});
+
+elements.discardScan.addEventListener("click", async () => {
+  try {
+    elements.status.textContent = "Discarding interrupted scan…";
+    updateProgress(await sendToActiveTab({ type: "DISCARD_INTERRUPTED_SCAN" }));
+  } catch (error) {
+    elements.status.textContent = error.message || String(error);
+  }
+});
+
 elements.openResults.addEventListener("click", async () => {
   try {
     if (!latestProgress?.resultsUrl) {
       throw new Error("No hosted results URL is available yet.");
     }
 
-    await chrome.tabs.create({ url: latestProgress.resultsUrl });
+    const resultsUrl = canonicaliseLegacyDashboardUrl(
+      new URL(latestProgress.resultsUrl)
+    ).toString();
+    await chrome.tabs.create({ url: resultsUrl });
   } catch (error) {
     elements.status.textContent = error.message || String(error);
   }

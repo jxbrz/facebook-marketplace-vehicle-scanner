@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Facebook Marketplace Vehicle Scanner v23.0.1",
-  "version": "23.0.1",
-  "description": "Stable-identity Marketplace scanner with Vercel dashboard integration and upgrade-safe local settings.",
+  "name": "Kelmar Vehicle Scanner",
+  "version": "23.0.8",
+  "description": "Scan Facebook Marketplace vehicle listings and securely send results to a private sourcing dashboard.",
   "permissions": [
     "storage",
     "tabs"
@@ -10,9 +10,8 @@
   "host_permissions": [
     "https://www.facebook.com/*",
     "https://facebook.com/*",
-    "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "https://sourcing.kelmarvehiclesltd.co.uk/*",
+    "https://facebook-web-filter.vercel.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -27,28 +26,36 @@
       ],
       "js": [
         "category-detector.js",
+        "listing-category-pipeline.js",
         "mileage-utils.js",
+        "scanner-lifecycle.js",
+        "scanner-diagnostics.js",
+        "scanner-runtime.js",
+        "scanner-storage.js",
+        "vehicle-identity.js",
+        "listing-details-extractor.js",
         "content.js"
       ],
       "css": [
         "styles.css"
       ],
       "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://www.facebook.com/marketplace/item/*",
-        "https://facebook.com/marketplace/item/*"
-      ],
-      "js": [
-        "listing-details-extractor.js"
-      ],
-      "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Marketplace Vehicle Scanner"
+    "default_title": "Kelmar Vehicle Scanner",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "homepage_url": "https://sourcing.kelmarvehiclesltd.co.uk/support",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAolBlDeXmp8nhMYkVN64HN7ekUonx9gMi2SFh23U06EVh0tNlTehmkc/LDXqt0+Z4e4rU8FS9tBeh0kgIfc1aVkwf6vMPP/8SG7Mua8vRtmpCGpo2KBig6DdHWisJjq6Xs0ZxjziH4XsJ9qM/RYtLf6KpeCCHoCpMLGA23WJjBF+YJnjJ6diuTbtHgidfvWjPEYzZvFc3ciBjeui0S9NS+krZygMnFUdFQlG1B+B/0vv9IJXP5p2XSbEbX2YXfHPl8d5j0s4FfarkD0XN04JfK02zv/zvh456GSX3ASFINkEdP9ixxdqTTDK2FFPS4tU3hOMM5ED6GRPdjs0ey+F9twIDAQAB"
 }

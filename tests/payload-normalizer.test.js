@@ -8,6 +8,7 @@ function listing(overrides = {}) {
     sourceUrl: "https://www.facebook.com/marketplace/item/123/",
     status: "matched",
     currency: "GBP",
+    imageExtractionStatus: "complete",
     rawMetadata: {},
     ...overrides
   };
@@ -54,11 +55,41 @@ test("preserves source mileage units only when value and unit form a valid pair"
   assert.equal(result.mileageValue, 68600);
   assert.equal(result.mileageUnit, "km");
   assert.equal(result.mileageOriginalText, "68,600 km");
+  assert.equal(result.mileageUnitSource, null);
 
   const incomplete = normaliseRemoteListing(listing({ mileageValue: 68600 }));
   assert.equal(incomplete.mileageValue, null);
   assert.equal(incomplete.mileageUnit, null);
   assert.equal(incomplete.mileageOriginalText, null);
+  assert.equal(incomplete.mileageUnitSource, null);
+});
+
+test("preserves explicit Facebook UK mileage correction provenance", () => {
+  const result = normaliseRemoteListing(listing({
+    mileage: 68600,
+    mileageValue: 68600,
+    mileageUnit: "mi",
+    mileageOriginalText: "68,600 km",
+    mileageUnitSource: "facebook_uk_label_correction"
+  }));
+  assert.equal(result.mileage, 68600);
+  assert.equal(result.mileageValue, 68600);
+  assert.equal(result.mileageUnit, "mi");
+  assert.equal(result.mileageOriginalText, "68,600 km");
+  assert.equal(result.mileageUnitSource, "facebook_uk_label_correction");
+});
+
+test("historical mileage without correction provenance remains unchanged", () => {
+  const result = normaliseRemoteListing(listing({
+    mileage: null,
+    mileageValue: 68600,
+    mileageUnit: "km",
+    mileageOriginalText: "68,600 km"
+  }));
+  assert.equal(result.mileage, null);
+  assert.equal(result.mileageValue, 68600);
+  assert.equal(result.mileageUnit, "km");
+  assert.equal(result.mileageUnitSource, null);
 });
 
 test("validates required URLs, statuses, categories, and metadata shape", () => {
@@ -85,7 +116,7 @@ test("normalises valid category, currency, URLs, and nullable text", () => {
 });
 
 test("preserves full-description line breaks and remains backward compatible", () => {
-  const oldResult = normaliseRemoteListing(listing());
+  const oldResult = normaliseRemoteListing(listing({ imageExtractionStatus: undefined }));
   assert.equal(oldResult.fullDescription, null);
   assert.deepEqual(oldResult.imageUrls, []);
   assert.deepEqual({ ...oldResult.vehicleAttributes }, {});
@@ -94,6 +125,19 @@ test("preserves full-description line breaks and remains backward compatible", (
     fullDescription: "  First line\r\n\r\nSecond line  "
   }));
   assert.equal(result.fullDescription, "First line\n\nSecond line");
+});
+
+test("unavailable and legacy payloads cannot replay untrusted images", () => {
+  for (const imageExtractionStatus of [undefined, "unavailable"]) {
+    const result = normaliseRemoteListing(listing({
+      imageExtractionStatus,
+      imageUrl: "https://example.com/stale-primary.jpg",
+      imageUrls: ["https://example.com/stale-gallery.jpg"]
+    }));
+    assert.equal(result.imageExtractionStatus, "unavailable");
+    assert.equal(result.imageUrl, null);
+    assert.deepEqual(result.imageUrls, []);
+  }
 });
 
 test("deduplicates, caps, and safely omits malformed image URLs", () => {
@@ -119,6 +163,27 @@ test("normalises attributes to a bounded deterministic plain JSON-safe map", () 
   assert.deepEqual(Object.keys(result.vehicleAttributes), ["Mileage", "Transmission"]);
   assert.equal(result.vehicleAttributes.Mileage, "72000");
   assert.equal(Object.getPrototypeOf(result.vehicleAttributes), null);
+});
+
+test("carries detected advert make and model through existing optional attributes", () => {
+  const result = normaliseRemoteListing(listing({
+    vehicleAttributes: {
+      "Advert make": "Volkswagen",
+      "Advert model": "Polo",
+      "Advert make/model source": "listing_title"
+    },
+    rawMetadata: {
+      vehicleIdentity: {
+        detectedMake: "Volkswagen",
+        detectedModel: "Polo",
+        matchingRule: "explicit_alias_and_token_match_v1"
+      }
+    }
+  }));
+  assert.equal(result.vehicleAttributes["Advert make"], "Volkswagen");
+  assert.equal(result.vehicleAttributes["Advert model"], "Polo");
+  assert.equal(result.rawMetadata.vehicleIdentity.detectedModel, "Polo");
+  assert.equal(normaliseRemoteListing(listing()).vehicleAttributes["Advert make"], undefined);
 });
 
 test("bounds seller names and accepts only Facebook profile URLs", () => {

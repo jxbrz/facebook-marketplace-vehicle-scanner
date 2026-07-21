@@ -13,7 +13,7 @@
         <h1>Vehicle Scanner</h1>
         <p>Controlled Facebook scanning with hosted results.</p>
       </div>
-      <span class="version">v19</span>
+      <span class="version">v23.0.6</span>
     </header>
 
     <section class="progress-card">
@@ -30,7 +30,7 @@
 
       <label>
         Dashboard URL
-        <input id="dashboardUrl" type="url" placeholder="https://your-app.vercel.app">
+        <input id="dashboardUrl" type="url" placeholder="https://sourcing.kelmarvehiclesltd.co.uk">
       </label>
 
       <label>
@@ -118,16 +118,28 @@
           <option value="hide">Reject the listing</option>
         </select>
       </label>
+
+      <label>
+        Accepted makes (optional)
+        <textarea id="acceptedMakes" rows="2" placeholder="Volkswagen, Audi, SEAT"></textarea>
+      </label>
+
+      <label>
+        Accepted models (optional)
+        <textarea id="acceptedModels" rows="2" placeholder="Polo, Golf, A3, Ibiza"></textarea>
+      </label>
+      <p class="section-note">Separate values with commas or new lines. Matching is case-insensitive and uses controlled manufacturer aliases.</p>
     </section>
 
     <section>
-      <h2>Exclude insurance categories</h2>
+      <h2>Insurance categories</h2>
       <div class="category-grid">
-        <label><input class="category" type="checkbox" value="S"> Cat S</label>
-        <label><input class="category" type="checkbox" value="N"> Cat N</label>
-        <label><input class="category" type="checkbox" value="C"> Cat C</label>
-        <label><input class="category" type="checkbox" value="D"> Cat D</label>
+        <label><input class="category" type="checkbox" value="S" checked disabled> Cat S</label>
+        <label><input class="category" type="checkbox" value="N" checked disabled> Cat N</label>
+        <label><input class="category" type="checkbox" value="C" checked disabled> Cat C</label>
+        <label><input class="category" type="checkbox" value="D" checked disabled> Cat D</label>
       </div>
+      <p class="section-note">Positive Cat S, N, C or D disclosures are always rejected after final evidence extraction.</p>
     </section>
 
     <section>
@@ -140,8 +152,18 @@
 
     <div class="actions primary-actions">
       <button id="startScan" class="primary" type="button">Start new hosted scan</button>
+      <button id="pauseScan" type="button">Pause</button>
       <button id="stopScan" type="button">Stop</button>
     </div>
+
+    <section id="recoveryActions" hidden>
+      <h2 id="recoveryTitle">Interrupted scan found</h2>
+      <p id="recoveryText" class="section-note">Resume explicitly or discard only this interrupted run.</p>
+      <div class="actions recovery-actions">
+        <button id="resumeScan" class="primary" type="button">Resume scan</button>
+        <button id="discardScan" type="button">Discard scan</button>
+      </div>
+    </section>
 
     <div class="actions secondary-actions">
       <button id="openResults" type="button">Open results</button>
@@ -156,6 +178,7 @@
       the extension no longer hides or restyles Facebook listing cards.
     </p>
   </main>
+  <script src="vehicle-identity.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

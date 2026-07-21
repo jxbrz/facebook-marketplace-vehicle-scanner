@@ -135,6 +135,7 @@ textarea { resize: vertical; }
 }
 .primary-actions { grid-template-columns: 2fr 1fr; }
 .secondary-actions { grid-template-columns: repeat(3, 1fr); }
+.recovery-actions { grid-template-columns: repeat(2, 1fr); }
 
 button {
   padding: 9px 7px;

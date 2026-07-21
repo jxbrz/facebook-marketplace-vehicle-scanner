@@ -1,21 +1,23 @@
-const EXTENSION_VERSION = "22.0.0";
+const EXTENSION_VERSION = "23.0.8";
 
 const CONFIG = {
-  cacheTtlMs: 30 * 24 * 60 * 60 * 1000,
   maxListingsPerDomPass: 160,
   maxQueuedInspections: 12,
+  listingProcessingConcurrency: 3,
+  detailMaxRetries: 1,
+  detailRetryDelayMs: 1200,
   uploadBatchSize: 10,
   uploadDelayMs: 1200,
   uploadRetryMs: 5000,
+  uploadMaxRetries: 3,
   progressSyncDelayMs: 1800,
   persistDelayMs: 700,
+  runtimeProgressPersistDelayMs: 250,
   scanDebounceMs: 160,
   autoLoadPauseMs: 900,
   autoLoadStepRatio: 0.72,
   autoLoadMaxStalls: 10,
   autoLoadEndConfirmations: 4,
-  activeWorkTimeoutMs: 45000,
-  activeWorkPollMs: 250,
   growthTimeoutMs: 3500,
   activeRunStorageKey: "scannerV19:activeRun"
 };
@@ -34,7 +36,10 @@ const DEFAULT_SETTINGS = {
   maxMileage: null,
   unknownMileagePolicy: "keep",
   excludeCategories: ["S", "N", "C", "D"],
-  excludedKeywords: []
+  excludedKeywords: [],
+  acceptedMakes: [],
+  acceptedModels: [],
+  scannerDebugDiagnostics: false
 };
 
 const FINAL_LISTING_STATUSES = new Set([
@@ -50,13 +55,17 @@ let scanGeneration = 0;
 let scanningActive = false;
 let autoLoadingActive = false;
 let autoLoadStopRequested = true;
+let scrollState = "idle";
 let finalising = false;
 let scanFinalised = false;
 let scanStartedAt = null;
 let scanCompletedAt = null;
 let scanDeadlineAt = null;
 let scanStatus = "idle";
+let lifecycleState = "idle";
+let historicalScanStatus = null;
 let stopReason = null;
+let runToken = null;
 let remoteRun = null;
 let remoteCompleted = false;
 let remoteSyncState = "idle";
@@ -73,16 +82,121 @@ let scanTimer = null;
 let persistTimer = null;
 let uploadTimer = null;
 let progressTimer = null;
+let runtimeProgressTimer = null;
 let deadlineTimer = null;
 let elapsedTimer = null;
 let observerTimer = null;
 let scrollTimer = null;
 let uploadInFlight = false;
+let uploadRetryCount = 0;
+let lastUploadAttemptAt = null;
 let progressSyncInFlight = false;
 let completionInFlight = false;
-let progressStorageTimer = null;
 let latestRuntimeProgress = null;
 let panelElements = null;
+let observerConnected = false;
+let lifecycleDiagnostics = [];
+let performanceDiagnostics = ScannerDiagnostics.create();
+let storageHealth = {
+  estimatedBytes: 0,
+  softLimitBytes: ScannerStorage.SOFT_LIMIT_BYTES,
+  pruneCount: 0,
+  lastQuotaFailure: null,
+  persistenceDegraded: false,
+  nearSoftLimit: false
+};
+let storageFixedBytes = 0;
+let processingQueue = null;
+let domMutationVersion = 0;
+let debugSummaryLastLoggedAt = 0;
+let imageDiagnosticsLogged = new Set();
+const scanDelayWaits = new Set();
+
+function resetPerformanceDiagnostics() {
+  performanceDiagnostics = ScannerDiagnostics.create({
+    enabled: settings.scannerDebugDiagnostics === true,
+    maxListings: 520,
+    maxScrolls: 100
+  });
+  debugSummaryLastLoggedAt = 0;
+}
+
+function maybeLogPerformanceSummary(progress) {
+  if (!performanceDiagnostics.enabled) return;
+  const now = Date.now();
+  if (now - debugSummaryLastLoggedAt < 10000) return;
+  debugSummaryLastLoggedAt = now;
+  console.info("Marketplace Vehicle Scanner timing summary:", {
+    processed: progress.processed,
+    queued: progress.queued,
+    activeWorkers: progress.scanning,
+    ...progress.performanceDiagnostics
+  });
+}
+
+function maybeLogImageExtractionDiagnostics(listingId, result, metadata = {}) {
+  if (!settings.scannerDebugDiagnostics || !result) return;
+  const listingIdHash = ListingDetailsExtractor.shortPathHash(String(listingId || ""));
+  if (imageDiagnosticsLogged.has(listingIdHash) || imageDiagnosticsLogged.size >= 25) return;
+  imageDiagnosticsLogged.add(listingIdHash);
+  const resolved = ListingDetailsExtractor.resolveListingImages(result, {
+    listingId,
+    sourceListingId: metadata.imageOwnerListingId,
+    imageUrl: metadata.imageUrl
+  });
+  const diagnostics = result.imageDiagnostics || {};
+  console.info("Marketplace Vehicle Scanner image ownership summary:", {
+    listingIdHash,
+    selectedExtractionSource: resolved.imageExtractionSource,
+    imageExtractionStatus: resolved.imageExtractionStatus,
+    declaredPhotoCount: Number(diagnostics.declaredPhotoCount) || null,
+    galleryCandidateCount: Number(diagnostics.galleryCandidateCount) || 0,
+    acceptedCount: Number(diagnostics.acceptedCount) || resolved.imageUrls.length,
+    rejectionReasonCounts: { ...(diagnostics.rejectionReasons || {}) },
+    carouselControlsDetected: diagnostics.carouselControlsDetected === true,
+    cardFallbackUsed: resolved.imageExtractionSource === "card_thumbnail"
+  });
+}
+
+function recordLifecycleDiagnostic(event, details = {}) {
+  const entry = {
+    at: new Date().toISOString(),
+    event: String(event).slice(0, 80),
+    lifecycleState,
+    scanStatus,
+    ...Object.fromEntries(
+      Object.entries(details).slice(0, 8).map(([key, value]) => [
+        String(key).slice(0, 40),
+        typeof value === "string" ? value.slice(0, 120) : Boolean(value)
+      ])
+    )
+  };
+  lifecycleDiagnostics = [...lifecycleDiagnostics, entry].slice(-30);
+  console.info("Marketplace Vehicle Scanner lifecycle:", entry);
+}
+
+function scanIsRunning() {
+  return scanningActive && ScannerLifecycle.permitsScanningActivity(lifecycleState);
+}
+
+function waitForScanDelay(milliseconds) {
+  return new Promise(resolve => {
+    const wait = { timer: null, resolve };
+    wait.timer = setTimeout(() => {
+      scanDelayWaits.delete(wait);
+      resolve();
+    }, milliseconds);
+    scanDelayWaits.add(wait);
+  });
+}
+
+function cancelScanDelays() {
+  for (const wait of scanDelayWaits) {
+    clearTimeout(wait.timer);
+    wait.resolve();
+  }
+  scanDelayWaits.clear();
+}
 
 function getRouteKey() {
   return `${location.pathname}${location.search}`;
@@ -134,23 +248,7 @@ function deriveScanName() {
 }
 
 function normaliseListingUrl(href) {
-  try {
-    const url = new URL(href, location.origin);
-    let match = url.pathname.match(/\/marketplace\/item\/(\d+)/);
-
-    if (!match) {
-      match = url.pathname.match(/\/item\/(\d+)/);
-    }
-
-    if (!match) return null;
-
-    return {
-      id: match[1],
-      url: `${url.origin}/marketplace/item/${match[1]}/`
-    };
-  } catch {
-    return null;
-  }
+  return ScannerRuntime.normaliseListingUrl(href, location.origin);
 }
 
 function getUniqueListingIds(element) {
@@ -204,7 +302,7 @@ function getCardLines(card) {
     .filter(value => !/^(Not scanned|Queued|Scanning…|Matches filters)$/i.test(value));
 }
 
-function extractCardMetadata(card) {
+function extractCardMetadata(card, listingId, sourceAnchor) {
   const lines = getCardLines(card);
   const text = lines.join(" ");
   const yearMatch = text.match(/\b(19[8-9]\d|20[0-3]\d)\b/);
@@ -265,7 +363,11 @@ function extractCardMetadata(card) {
     /\bmanual\b/i.test(text) ? "manual" : null;
 
   const sellerType = /\bdealer(?:ship)?\b/i.test(text) ? "dealer" : null;
-  const image = card.querySelector("img[src]");
+  const listingAnchors = [sourceAnchor, ...card.querySelectorAll('a[href*="/item/"]')]
+    .filter(Boolean)
+    .filter((anchor, index, values) => values.indexOf(anchor) === index)
+    .filter(anchor => normaliseListingUrl(anchor.href)?.id === listingId);
+  const image = listingAnchors.map(anchor => anchor.querySelector("img[src]")).find(Boolean) || null;
   const imageUrl = image?.currentSrc || image?.src || null;
 
   return {
@@ -278,7 +380,8 @@ function extractCardMetadata(card) {
     sellerType,
     fuelType,
     transmission,
-    imageUrl: imageUrl ? truncate(imageUrl, 1600) : null
+    imageUrl: imageUrl ? truncate(imageUrl, 1600) : null,
+    imageOwnerListingId: imageUrl ? listingId : null
   };
 }
 
@@ -324,6 +427,8 @@ function getFilterFingerprint() {
     maxMileage: settings.maxMileage,
     unknownMileagePolicy: settings.unknownMileagePolicy,
     excludeCategories: [...settings.excludeCategories].sort(),
+    acceptedMakes: settings.acceptedMakes.map(VehicleIdentity.normaliseKey).sort(),
+    acceptedModels: settings.acceptedModels.map(VehicleIdentity.normaliseKey).sort(),
     excludedKeywords: settings.excludedKeywords
       .map(value => String(value).trim().toLowerCase())
       .filter(Boolean)
@@ -331,37 +436,26 @@ function getFilterFingerprint() {
   });
 }
 
-function combineCategoryResult(metadata, result = null) {
-  const cardDetection = CategoryDetector.detectCategory(
-    metadata.cardText || "",
-    { source: "facebook-card" }
-  );
-  let pageDetection = null;
-
-  if (result) {
-    if (Array.isArray(result.evidence)) {
-      pageDetection = result;
-    } else if (result.detected || result.match || result.context) {
-      pageDetection = CategoryDetector.detectCategory(
-        result.context || result.match || "",
-        { source: "facebook-listing-page" }
-      );
-    }
-  }
-
-  const combined = CategoryDetector.combineDetections([
-    pageDetection,
-    cardDetection
-  ]);
-
+function enrichVehicleIdentity(metadata, result, final = false) {
+  const identity = VehicleIdentity.evaluateFilters(settings, {
+    structuredMake: result?.detectedMake,
+    structuredModel: result?.detectedModel,
+    listingTitle: result?.listingTitle,
+    vehicleAttributes: result?.vehicleAttributes,
+    cardTitle: metadata.title
+  }, { final });
   return {
     ...(result || {}),
-    ...combined,
-    evidenceExcerpt:
-      result?.evidenceExcerpt ||
-      (typeof result?.evidence === "string" ? result.evidence : null) ||
-      combined.context
+    detectedMake: identity.detectedMake,
+    detectedModel: identity.detectedModel,
+    makeModelSource: identity.source,
+    vehicleIdentityDiagnostics: identity.diagnostics,
+    identityFilterDecision: identity
   };
+}
+
+function combineCategoryResult(metadata, result = null) {
+  return ListingCategoryPipeline.classifyFinalCategory(metadata, result);
 }
 
 function evaluateFilters(metadata, result = null) {
@@ -450,16 +544,16 @@ function evaluateFilters(metadata, result = null) {
     }
   }
 
-  if (
-    combined.categoryDetected &&
-    settings.excludeCategories.includes(combined.category)
-  ) {
+  if (result?.identityFilterDecision?.rejectionCode) {
     return {
       rejected: true,
-      reason: `CAT ${combined.category} detected`,
-      code: "category"
+      reason: result.identityFilterDecision.reason,
+      code: result.identityFilterDecision.rejectionCode
     };
   }
+
+  const categoryOutcome = ListingCategoryPipeline.categoryOutcome(result);
+  if (categoryOutcome.rejected) return categoryOutcome;
 
   const lowerText = combined.cardText.toLowerCase();
 
@@ -492,6 +586,7 @@ function upsertLedgerEntry(listingId, patch = {}) {
     listingId,
     url: null,
     status: "discovered",
+    workState: "unseen",
     reason: null,
     code: null,
     source: "search-card",
@@ -518,6 +613,13 @@ function upsertLedgerEntry(listingId, patch = {}) {
 function markDiscovered(listing, metadata) {
   const current = getLedgerEntry(listing.id);
 
+  if (current) {
+    performanceDiagnostics.increment("duplicateSkipped");
+  } else {
+    performanceDiagnostics.recordListing(listing.id, "discovered");
+    performanceDiagnostics.increment("discovered");
+  }
+
   return upsertLedgerEntry(listing.id, {
     url: listing.url,
     status: current?.status || "discovered",
@@ -529,6 +631,7 @@ function markDiscovered(listing, metadata) {
 function markFinal(listingId, status, options = {}) {
   const entry = upsertLedgerEntry(listingId, {
     status,
+    workState: options.workState || (status === "unavailable" ? "failed_final" : "processed"),
     reason: options.reason || (status === "matched" ? "No selected filter matched" : null),
     code: options.code || (status === "unavailable" ? "unavailable" : null),
     source: options.source || "listing-result",
@@ -537,6 +640,7 @@ function markFinal(listingId, status, options = {}) {
   });
 
   queuedListingIds.delete(listingId);
+  performanceDiagnostics.recordListing(listingId, "processingComplete");
   queueRemoteListing(entry, options.result || null);
   updateProgress();
   schedulePersist();
@@ -546,7 +650,11 @@ function markFinal(listingId, status, options = {}) {
 }
 
 function classifyListing(listingId, metadata, result, source) {
-  const combinedResult = combineCategoryResult(metadata, result);
+  const combinedResult = enrichVehicleIdentity(
+    metadata,
+    combineCategoryResult(metadata, result),
+    true
+  );
   const evaluation = evaluateFilters(metadata, combinedResult);
   const status = evaluation.rejected ? "rejected" : "matched";
 
@@ -562,12 +670,16 @@ function classifyListing(listingId, metadata, result, source) {
 }
 
 function countStates() {
+  const finalCounts = ListingCategoryPipeline.countFinalOutcomes(
+    ledgerByListingId.values(),
+    settings.targetMatches
+  );
   const counts = {
     discovered: ledgerByListingId.size,
-    processed: 0,
-    matched: 0,
-    rejected: 0,
-    unavailable: 0,
+    processed: finalCounts.processed,
+    matched: finalCounts.matched,
+    rejected: finalCounts.rejected,
+    unavailable: finalCounts.unavailable,
     queued: 0,
     scanning: 0,
     activeWork: 0,
@@ -575,14 +687,10 @@ function countStates() {
   };
 
   for (const entry of ledgerByListingId.values()) {
-    if (entry.status === "matched") counts.matched += 1;
-    if (entry.status === "rejected") counts.rejected += 1;
-    if (entry.status === "unavailable") counts.unavailable += 1;
     if (entry.status === "queued") counts.queued += 1;
     if (entry.status === "scanning") counts.scanning += 1;
   }
 
-  counts.processed = counts.matched + counts.rejected + counts.unavailable;
   counts.activeWork = counts.queued + counts.scanning;
   counts.pending = Math.max(0, counts.discovered - counts.processed);
   counts.invariantValid =
@@ -612,11 +720,23 @@ function getProgressPayload() {
 
 function getRuntimeProgress() {
   const counts = countStates();
+  performanceDiagnostics.setGauges({
+    queueSize: counts.queued,
+    activeWorkers: counts.scanning,
+    processed: counts.processed
+  });
 
   return {
     ...counts,
     scanningActive,
+    executionState: scanIsRunning() ? "running" : "idle",
+    lifecycleState,
+    historicalScanStatus,
+    interrupted: lifecycleState === "interrupted",
+    paused: lifecycleState === "paused",
+    canResume: ["interrupted", "paused"].includes(lifecycleState),
     autoLoadingActive,
+    scrollState,
     targetMatches: settings.targetMatches,
     maximumProcessed: settings.maximumProcessed,
     maximumDurationSeconds: settings.maximumDurationSeconds,
@@ -641,7 +761,10 @@ function getRuntimeProgress() {
     startedAt: scanStartedAt,
     completedAt: scanCompletedAt,
     updatedAt: Date.now(),
-    invariantValid: counts.invariantValid
+    invariantValid: counts.invariantValid,
+    lifecycleDiagnostics,
+    performanceDiagnostics: performanceDiagnostics.snapshot(),
+    storageHealth: { ...storageHealth }
   };
 }
 
@@ -649,15 +772,21 @@ function updateProgress() {
   const progress = getRuntimeProgress();
   latestRuntimeProgress = progress;
   renderPanel(progress);
+  maybeLogPerformanceSummary(progress);
 
-  clearTimeout(progressStorageTimer);
-  progressStorageTimer = setTimeout(() => {
-    chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress });
-  }, 180);
+  clearTimeout(runtimeProgressTimer);
+  runtimeProgressTimer = setTimeout(() => {
+    chrome.storage.local.set({ runtimeProgress: latestRuntimeProgress }).catch(error => {
+      if (ScannerStorage.isQuotaError(error)) {
+        storageHealth.lastQuotaFailure = new Date().toISOString();
+        storageHealth.nearSoftLimit = true;
+      }
+    });
+  }, CONFIG.runtimeProgressPersistDelayMs);
 }
 
 function getTerminalCondition() {
-  if (!scanningActive || scanFinalised) return null;
+  if (!scanIsRunning() || scanFinalised) return null;
 
   const counts = countStates();
 
@@ -714,6 +843,7 @@ function collectCards() {
     const listing = normaliseListingUrl(anchor.href);
 
     if (!listing || unique.has(listing.id)) continue;
+    performanceDiagnostics.recordListing(listing.id, "idExtracted");
 
     if (!ledgerByListingId.has(listing.id) && ledgerByListingId.size >= discoveryCeiling) {
       continue;
@@ -725,7 +855,7 @@ function collectCards() {
     const rect = card.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
 
-    const metadata = extractCardMetadata(card);
+    const metadata = extractCardMetadata(card, listing.id, anchor);
     markDiscovered(listing, metadata);
     cardByListingId.set(listing.id, card);
 
@@ -744,44 +874,28 @@ function collectCards() {
     .slice(0, CONFIG.maxListingsPerDomPass);
 }
 
+function collectScannableEntries() {
+  return ScannerRuntime.mergeScannableEntries(
+    collectCards(),
+    ledgerByListingId.values(),
+    CONFIG.maxListingsPerDomPass
+  );
+}
+
 async function loadCachedResults(listingIds) {
-  const keys = listingIds.map(id => `listing:${id}`);
-  if (!keys.length) return new Map();
-
-  const stored = await chrome.storage.local.get(keys);
-  const now = Date.now();
   const results = new Map();
-  const expired = [];
-
   for (const listingId of listingIds) {
-    const key = `listing:${listingId}`;
-    const cached = stored[key];
-
-    if (!cached || now - cached.savedAt > CONFIG.cacheTtlMs) {
-      if (cached) expired.push(key);
-      continue;
+    if (resultByListingId.has(listingId)) {
+      results.set(listingId, resultByListingId.get(listingId));
     }
-
-    results.set(listingId, cached.result);
-    resultByListingId.set(listingId, cached.result);
   }
-
-  if (expired.length) {
-    chrome.storage.local.remove(expired);
-  }
-
   return results;
 }
 
 async function saveCachedResult(listingId, result) {
+  // Full detail results are intentionally memory-only. The compact active-run
+  // state persists the upload payload only until the dashboard confirms it.
   resultByListingId.set(listingId, result);
-
-  await chrome.storage.local.set({
-    [`listing:${listingId}`]: {
-      savedAt: Date.now(),
-      result
-    }
-  });
 }
 
 function sendBackground(message) {
@@ -806,7 +920,9 @@ async function inspectListing(url, priority) {
   return sendBackground({
     type: "INSPECT_LISTING",
     url,
-    priority
+    priority,
+    runToken,
+    debug: settings.scannerDebugDiagnostics === true
   });
 }
 
@@ -841,13 +957,36 @@ function getMileageForFilter(metadata, result) {
   );
 }
 
+function normaliseFreshFacebookUkMileage(result) {
+  if (!result?.mileageDetail) return result;
+  return {
+    ...result,
+    mileageDetail: MileageUtils.normaliseOperationalMileage(result.mileageDetail, {
+      source: "facebook_marketplace",
+      market: "GB"
+    })
+  };
+}
+
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
+  const listingImages = ListingDetailsExtractor.resolveListingImages(result, {
+    listingId: entry.listingId,
+    sourceListingId: metadata.imageOwnerListingId,
+    imageUrl: metadata.imageUrl
+  });
+  const vehicleAttributes = { ...(result?.vehicleAttributes || {}) };
+  if (result?.detectedMake) vehicleAttributes["Advert make"] = truncate(result.detectedMake, 80);
+  if (result?.detectedModel) vehicleAttributes["Advert model"] = truncate(result.detectedModel, 80);
+  if (result?.makeModelSource) vehicleAttributes["Advert make/model source"] = truncate(result.makeModelSource, 80);
   const mileageValue = toNullableNonNegativeInteger(result?.mileageDetail?.value);
   const mileageUnit = ["mi", "km"].includes(result?.mileageDetail?.unit)
     ? result.mileageDetail.unit
     : null;
   const hasSourceMileage = mileageValue !== null && mileageUnit !== null;
+  const mileageUnitSource = result?.mileageDetail?.unitSource === MileageUtils.FACEBOOK_UK_LABEL_CORRECTION
+    ? MileageUtils.FACEBOOK_UK_LABEL_CORRECTION
+    : null;
   const categoryEvidence = Array.isArray(result?.evidence)
     ? result.evidence.slice(0, 10).map(item => ({
         category: item.category,
@@ -874,7 +1013,7 @@ function buildRemoteListing(entry, result = null) {
   return {
     externalListingId: entry.listingId,
     sourceUrl: entry.url,
-    title: metadata.title || null,
+    title: result?.listingTitle || metadata.title || null,
     price: metadata.price ?? result?.price ?? null,
     currency: "GBP",
     year: metadata.year ?? result?.year ?? null,
@@ -886,20 +1025,22 @@ function buildRemoteListing(entry, result = null) {
     mileageOriginalText: hasSourceMileage
       ? truncate(result?.mileageDetail?.originalText, 120)
       : null,
+    mileageUnitSource: hasSourceMileage ? mileageUnitSource : null,
     location: metadata.location || null,
     sellerType: metadata.sellerType || null,
     fuelType: metadata.fuelType || result?.fuelType || null,
     transmission: metadata.transmission || result?.transmission || null,
     bodyStyle: null,
-    imageUrl: result?.primaryImageUrl || metadata.imageUrl || null,
-    imageUrls: Array.isArray(result?.imageUrls) ? result.imageUrls : [],
+    imageUrl: listingImages.imageUrl,
+    imageUrls: listingImages.imageUrls,
+    imageExtractionStatus: listingImages.imageExtractionStatus,
     descriptionExcerpt: result?.evidenceExcerpt
       ? truncate(result.evidenceExcerpt, 600)
       : result?.context
         ? truncate(result.context, 600)
         : null,
     fullDescription: result?.fullDescription || null,
-    vehicleAttributes: result?.vehicleAttributes || {},
+    vehicleAttributes,
     sellerName: result?.sellerName || null,
     sellerProfileUrl: result?.sellerProfileUrl || null,
     listedAtText: result?.listedAtText || null,
@@ -924,6 +1065,13 @@ function buildRemoteListing(entry, result = null) {
       fetchedYear: result?.year ?? null,
       fetchedMileage: result?.mileage ?? null,
       fetchedPrice: result?.price ?? null,
+      vehicleIdentity: result?.vehicleIdentityDiagnostics || null,
+      preliminaryCategoryResult: result?.categoryClassificationDiagnostics?.preliminaryCategoryResult || null,
+      finalCategoryResult: result?.categoryClassificationDiagnostics?.finalCategoryResult || null,
+      finalCategoryEvidenceSource: result?.categoryClassificationDiagnostics?.finalCategoryEvidenceSource || null,
+      reclassifiedAfterRenderedExtraction: Boolean(result?.categoryClassificationDiagnostics?.reclassifiedAfterRenderedExtraction),
+      provisionalStatus: result?.categoryClassificationDiagnostics?.provisionalStatus || null,
+      finalStatus: result?.categoryClassificationDiagnostics?.finalStatus || entry.status,
       extractionSource: result?.extractionSource || null,
       checkedAt: result?.checkedAt || entry.processedAt || null
     },
@@ -941,15 +1089,52 @@ function queueRemoteListing(entry, result = null) {
 
   pendingUploadsByListingId.set(
     entry.listingId,
-    buildRemoteListing(entry, result)
+    ScannerStorage.sanitisePendingUpload(buildRemoteListing(entry, result))
   );
 
-  remoteSyncState = "pending";
-  remoteSyncError = null;
+  if (uploadRetryCount >= CONFIG.uploadMaxRetries) {
+    remoteSyncState = "error";
+    remoteSyncError = remoteSyncError || "Automatic upload retry limit reached. Use Retry sync.";
+  } else {
+    remoteSyncState = "pending";
+    remoteSyncError = null;
+  }
   scheduleUpload();
 }
 
-function scheduleUpload(delay = CONFIG.uploadDelayMs) {
+async function pruneUploadedListings(listingIds) {
+  const uploadedAt = Date.now();
+  for (const listingId of listingIds) {
+    resultByListingId.delete(listingId);
+    const entry = ledgerByListingId.get(listingId);
+    if (entry) {
+      ledgerByListingId.set(listingId, {
+        listingId,
+        status: entry.status,
+        workState: "processed",
+        reason: entry.reason || null,
+        code: entry.code || null,
+        source: entry.source || "dashboard-upload",
+        discoveredAt: entry.discoveredAt || null,
+        processedAt: entry.processedAt || uploadedAt,
+        uploadedAt
+      });
+    }
+  }
+
+  // Remove only obsolete extension-owned full-result caches. Settings,
+  // credentials, and pending failures are deliberately outside this list.
+  if (listingIds.length) {
+    await chrome.storage.local.remove(listingIds.map(id => `listing:${id}`)).catch(error => {
+      console.warn("Marketplace Vehicle Scanner could not remove a legacy completed cache entry:", {
+        quotaRelated: ScannerStorage.isQuotaError(error)
+      });
+    });
+  }
+}
+
+function scheduleUpload(delay = CONFIG.uploadDelayMs, retry = false) {
+  if (!retry && delay > 0 && uploadRetryCount >= CONFIG.uploadMaxRetries) return;
   clearTimeout(uploadTimer);
 
   uploadTimer = setTimeout(() => {
@@ -959,7 +1144,14 @@ function scheduleUpload(delay = CONFIG.uploadDelayMs) {
   }, delay);
 }
 
-async function flushPendingUploads(force = false) {
+function reserveUploadRetry() {
+  if (uploadRetryCount >= CONFIG.uploadMaxRetries) return false;
+  uploadRetryCount += 1;
+  performanceDiagnostics.increment("retries");
+  return true;
+}
+
+async function flushPendingUploads(force = false, allowRecreate = true) {
   if (uploadInFlight || !remoteRun?.scanId) return false;
   if (!pendingUploadsByListingId.size) {
     remoteSyncState = remoteCompleted ? "synced" : "idle";
@@ -979,16 +1171,42 @@ async function flushPendingUploads(force = false) {
 
       if (!batchEntries.length) break;
 
-      await sendBackground({
-        type: "REMOTE_UPLOAD_LISTINGS",
-        scanId: remoteRun.scanId,
-        listings: batchEntries.map(([, listing]) => listing),
-        progress: getProgressPayload()
-      });
+      const uploadStartedAt = Date.now();
+      lastUploadAttemptAt = uploadStartedAt;
+      try {
+        await sendBackground({
+          type: "REMOTE_UPLOAD_LISTINGS",
+          scanId: remoteRun.scanId,
+          listings: batchEntries.map(([, listing]) => listing),
+          progress: getProgressPayload()
+        });
+        performanceDiagnostics.recordUpload(
+          uploadStartedAt,
+          Date.now(),
+          batchEntries.length,
+          true
+        );
+        uploadRetryCount = 0;
+      } catch (error) {
+        performanceDiagnostics.recordUpload(
+          uploadStartedAt,
+          Date.now(),
+          batchEntries.length,
+          false
+        );
+        if (/timed out/i.test(error instanceof Error ? error.message : String(error))) {
+          performanceDiagnostics.increment("timeouts");
+        }
+        throw error;
+      }
 
+      const uploadedListingIds = [];
       for (const [listingId] of batchEntries) {
         pendingUploadsByListingId.delete(listingId);
+        uploadedListingIds.push(listingId);
       }
+
+      await pruneUploadedListings(uploadedListingIds);
 
       schedulePersist();
 
@@ -1000,7 +1218,12 @@ async function flushPendingUploads(force = false) {
     updateProgress();
     return pendingUploadsByListingId.size === 0;
   } catch (error) {
-    if (!force && isMissingRemoteScanError(error)) {
+    if (
+      !force &&
+      allowRecreate &&
+      isMissingRemoteScanError(error) &&
+      reserveUploadRetry()
+    ) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1013,19 +1236,25 @@ async function flushPendingUploads(force = false) {
     remoteSyncState = "error";
     remoteSyncError = error instanceof Error ? error.message : String(error);
     updateProgress();
+    schedulePersist();
 
     if (force) {
       throw error;
     }
 
-    scheduleUpload(CONFIG.uploadRetryMs);
+    if (!scanFinalised && reserveUploadRetry()) {
+      scheduleUpload(
+        Math.min(CONFIG.uploadRetryMs * (2 ** (uploadRetryCount - 1)), 20000),
+        true
+      );
+    }
     return false;
   } finally {
     uploadInFlight = false;
 
     if (scanFinalised && !remoteCompleted && remoteSyncState !== "error") {
       setTimeout(() => {
-        finaliseRemoteIfReady().catch(error => {
+        finaliseRemoteIfReady({ allowRecreate }).catch(error => {
           console.warn("Marketplace Vehicle Scanner completion retry failed:", error);
         });
       }, 0);
@@ -1061,7 +1290,7 @@ async function syncRemoteProgress() {
       remoteSyncError = null;
     }
   } catch (error) {
-    if (isMissingRemoteScanError(error)) {
+    if (isMissingRemoteScanError(error) && reserveUploadRetry()) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1081,41 +1310,112 @@ async function syncRemoteProgress() {
   }
 }
 
+function isRetryableInspectionError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /timed out|abort|failed to fetch|network|service worker did not respond|Facebook returned HTTP (?:408|425|429|500|502|503|504)\b/i.test(message);
+}
+
+function createProcessingQueue() {
+  return ScannerRuntime.createBoundedQueue({
+    concurrency: CONFIG.listingProcessingConcurrency,
+    maxRetries: CONFIG.detailMaxRetries,
+    retryDelayMs: attempt => CONFIG.detailRetryDelayMs * Math.max(1, attempt),
+    getId: item => item.entry.listing.id,
+    shouldRetry: isRetryableInspectionError,
+    worker: item => processListing(item.entry, item.generation),
+    onState(item, state, details) {
+      const { listing, metadata } = item.entry;
+      if (item.generation !== scanGeneration || !scanIsRunning()) return;
+
+      if (state === "unseen") {
+        queuedListingIds.delete(listing.id);
+        upsertLedgerEntry(listing.id, { status: "discovered", workState: "unseen" });
+      } else if (state === "queued") {
+        queuedListingIds.add(listing.id);
+        upsertLedgerEntry(listing.id, {
+          status: "queued",
+          workState: "queued",
+          url: listing.url,
+          metadata,
+          source: details.retry ? "scan-retry-queue" : "scan-queue"
+        });
+        performanceDiagnostics.recordListing(listing.id, "queued");
+        if (details.retry) performanceDiagnostics.increment("retries");
+      } else if (state === "processing") {
+        upsertLedgerEntry(listing.id, {
+          status: "scanning",
+          workState: "processing",
+          metadata,
+          source: "listing-request"
+        });
+        performanceDiagnostics.recordListing(listing.id, "processingStart");
+      } else if (state === "failed_retryable") {
+        upsertLedgerEntry(listing.id, {
+          status: "queued",
+          workState: "failed_retryable",
+          reason: details.error instanceof Error ? details.error.message : String(details.error),
+          source: "listing-retry"
+        });
+      } else if (state === "failed_final") {
+        queuedListingIds.delete(listing.id);
+        const message = details.error instanceof Error ? details.error.message : String(details.error);
+        if (/timed out|abort/i.test(message)) performanceDiagnostics.increment("timeouts");
+        markFinal(listing.id, "unavailable", {
+          reason: message,
+          code: "unavailable",
+          source: "request-failed",
+          metadata,
+          result: null,
+          workState: "failed_final"
+        });
+        scheduleScan(0);
+      } else if (state === "processed") {
+        queuedListingIds.delete(listing.id);
+        const entry = getLedgerEntry(listing.id);
+        if (entry && isFinalStatus(entry.status)) {
+          upsertLedgerEntry(listing.id, { workState: "processed" });
+        }
+        scheduleScan(0);
+      }
+
+      updateProgress();
+      schedulePersist();
+    }
+  });
+}
+
+function ensureProcessingQueue() {
+  if (!processingQueue || processingQueue.snapshot().stopped) {
+    processingQueue = createProcessingQueue();
+  }
+  return processingQueue;
+}
+
 async function processListing(entry, generation) {
   const { listing, metadata, priority } = entry;
 
-  if (!scanningActive || generation !== scanGeneration) return;
+  if (!scanIsRunning() || generation !== scanGeneration) return;
 
-  upsertLedgerEntry(listing.id, {
-    status: "scanning",
-    metadata,
-    url: listing.url,
-    source: "listing-request"
-  });
-  updateProgress();
-
+  performanceDiagnostics.recordListing(listing.id, "detailFetchStart");
+  let result;
   try {
-    const result = await inspectListing(listing.url, priority);
-
-    if (!scanningActive || generation !== scanGeneration) return;
-
-    await saveCachedResult(listing.id, result);
-    classifyListing(listing.id, metadata, result, "facebook-listing-page");
-  } catch (error) {
-    if (!scanningActive || generation !== scanGeneration) return;
-
-    markFinal(listing.id, "unavailable", {
-      reason: error instanceof Error ? error.message : String(error),
-      code: "unavailable",
-      source: "request-failed",
-      metadata,
-      result: null
-    });
+    result = normaliseFreshFacebookUkMileage(
+      await inspectListing(listing.url, priority)
+    );
+  } finally {
+    performanceDiagnostics.recordListing(listing.id, "detailFetchEnd");
   }
+
+  if (!scanIsRunning() || generation !== scanGeneration) return;
+
+  maybeLogImageExtractionDiagnostics(listing.id, result, metadata);
+
+  await saveCachedResult(listing.id, result);
+  classifyListing(listing.id, metadata, result, "facebook-listing-page");
 }
 
 async function scanPage() {
-  if (!settings.enabled || !scanningActive || finalising || scanFinalised) return;
+  if (!settings.enabled || !scanIsRunning() || finalising || scanFinalised) return;
   if (!isMarketplaceSearchRoute()) return;
 
   if (sourceSearchRouteKey && getRouteKey() !== sourceSearchRouteKey) {
@@ -1125,7 +1425,7 @@ async function scanPage() {
 
   if (evaluateAndFinaliseIfNeeded()) return;
 
-  const entries = collectCards();
+  const entries = collectScannableEntries();
   if (!entries.length) return;
 
   const cacheIds = entries
@@ -1134,7 +1434,7 @@ async function scanPage() {
   const cachedResults = await loadCachedResults(cacheIds);
 
   for (const entry of entries) {
-    if (!scanningActive || scanFinalised || finalising) break;
+    if (!scanIsRunning() || scanFinalised || finalising) break;
     if (evaluateAndFinaliseIfNeeded()) break;
 
     const counts = countStates();
@@ -1164,12 +1464,17 @@ async function scanPage() {
       continue;
     }
 
-    const localResult = combineCategoryResult(metadata, null);
+    const localResult = enrichVehicleIdentity(
+      metadata,
+      combineCategoryResult(metadata, null),
+      false
+    );
     const localEvaluation = evaluateFilters(metadata, localResult);
+    performanceDiagnostics.recordListing(listing.id, "cheapFilterComplete");
 
     if (
       localEvaluation.rejected &&
-      ["year", "price", "mileage", "mileage-unknown", "keyword"]
+      ["year", "price", "mileage", "mileage-unknown", "keyword", "make_not_allowed", "model_not_allowed"]
         .includes(localEvaluation.code)
     ) {
       markFinal(listing.id, "rejected", {
@@ -1182,16 +1487,9 @@ async function scanPage() {
       continue;
     }
 
-    queuedListingIds.add(listing.id);
-    upsertLedgerEntry(listing.id, {
-      status: "queued",
-      url: listing.url,
-      metadata,
-      source: "scan-queue"
-    });
-
-    processListing(entry, scanGeneration).catch(error => {
-      console.error("Marketplace Vehicle Scanner listing failed:", error);
+    ensureProcessingQueue().enqueue({
+      entry,
+      generation: scanGeneration
     });
   }
 
@@ -1200,36 +1498,13 @@ async function scanPage() {
 }
 
 function scheduleScan(delay = CONFIG.scanDebounceMs) {
+  if (!scanIsRunning()) return;
   clearTimeout(scanTimer);
   scanTimer = setTimeout(() => {
     scanPage().catch(error => {
       console.error("Marketplace Vehicle Scanner scan pass failed:", error);
     });
   }, delay);
-}
-
-function getActiveWorkCount() {
-  return countStates().activeWork;
-}
-
-async function waitForActiveWorkToSettle(timeoutMs = CONFIG.activeWorkTimeoutMs) {
-  const startedAt = Date.now();
-
-  while (scanningActive && !scanFinalised && !finalising) {
-    await scanPage();
-
-    if (getActiveWorkCount() === 0) {
-      return true;
-    }
-
-    if (Date.now() - startedAt >= timeoutMs) {
-      return false;
-    }
-
-    await new Promise(resolve => setTimeout(resolve, CONFIG.activeWorkPollMs));
-  }
-
-  return false;
 }
 
 function isScrollableElement(element) {
@@ -1247,34 +1522,36 @@ function findResultsScrollContainer() {
     .filter(card => card?.isConnected)
     .slice(0, 12);
 
-  const candidates = new Set([
-    document.scrollingElement,
-    document.documentElement,
-    document.body
-  ]);
+  const documentTarget = document.scrollingElement || document.documentElement;
+  const candidateStats = new Map();
+  const addCandidate = (element, depth) => {
+    if (!element) return;
+    const current = candidateStats.get(element) || {
+      target: element,
+      cardCount: 0,
+      totalDepth: 0,
+      range: Math.max(0, getScrollMetrics(element).max),
+      connected: element === documentTarget || element.isConnected !== false
+    };
+    current.cardCount += 1;
+    current.totalDepth += depth;
+    candidateStats.set(element, current);
+  };
+
+  for (let index = 0; index < visibleCards.length; index += 1) {
+    addCandidate(documentTarget, 50);
+  }
 
   for (const card of visibleCards) {
     let node = card.parentElement;
 
     for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
-      if (isScrollableElement(node)) candidates.add(node);
+      if (isScrollableElement(node)) addCandidate(node, depth + 1);
     }
   }
 
-  let best = document.scrollingElement || document.documentElement;
-  let bestRange = Math.max(0, best.scrollHeight - best.clientHeight);
-
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    const range = Math.max(0, candidate.scrollHeight - candidate.clientHeight);
-
-    if (range > bestRange) {
-      best = candidate;
-      bestRange = range;
-    }
-  }
-
-  return best;
+  const selected = ScannerRuntime.chooseScrollCandidate([...candidateStats.values()]);
+  return selected?.target || documentTarget;
 }
 
 function getScrollMetrics(container) {
@@ -1316,118 +1593,184 @@ function setScrollTop(container, value) {
   container.scrollTo({ top: value, behavior: "auto" });
 }
 
-function waitForListingGrowth(previousCount, timeoutMs = CONFIG.growthTimeoutMs) {
+function describeScrollTarget(container) {
+  if (
+    container === document.scrollingElement ||
+    container === document.documentElement ||
+    container === document.body
+  ) {
+    return "window";
+  }
+  const tag = String(container?.tagName || "element").toLowerCase();
+  const role = container?.getAttribute?.("role");
+  return role ? `${tag}[role=${String(role).slice(0, 40)}]` : tag;
+}
+
+function waitForListingGrowth(
+  previousCount,
+  container,
+  previousHeight,
+  previousMutationVersion,
+  timeoutMs = CONFIG.growthTimeoutMs
+) {
   return new Promise(resolve => {
     const startedAt = Date.now();
 
     const check = () => {
       collectCards();
       const currentCount = ledgerByListingId.size;
+      const targetReplaced =
+        container !== document.scrollingElement &&
+        container !== document.documentElement &&
+        container !== document.body &&
+        container?.isConnected === false;
+      const currentHeight = targetReplaced
+        ? 0
+        : getScrollMetrics(container).height;
+      const grew = currentCount > previousCount || currentHeight > previousHeight;
+      const mutated = domMutationVersion > previousMutationVersion;
 
-      if (currentCount > previousCount) {
-        resolve({ grew: true, count: currentCount });
+      if (grew || mutated || targetReplaced) {
+        resolve({ grew, mutated, targetReplaced, count: currentCount, height: currentHeight });
         return;
       }
 
-      if (!scanningActive || Date.now() - startedAt >= timeoutMs) {
-        resolve({ grew: false, count: currentCount });
+      if (!scanIsRunning() || Date.now() - startedAt >= timeoutMs) {
+        resolve({
+          grew: false,
+          mutated: false,
+          targetReplaced: false,
+          count: currentCount,
+          height: currentHeight
+        });
         return;
       }
 
-      setTimeout(check, 180);
+      waitForScanDelay(120).then(check);
     };
 
     check();
   });
 }
 
+function waitForAnimationFrame(timeoutMs = 120) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(finish, timeoutMs);
+    requestAnimationFrame(finish);
+  });
+}
+
 async function autoLoadListings() {
-  if (!settings.autoLoadEnabled || autoLoadingActive || !scanningActive) return;
+  if (!settings.autoLoadEnabled || autoLoadingActive || !scanIsRunning()) return;
 
   autoLoadingActive = true;
   autoLoadStopRequested = false;
-  let stalls = 0;
-  let endConfirmations = 0;
-  let previousDiscoveredCount = ledgerByListingId.size;
+  scrollState = "discovering";
+  recordLifecycleDiagnostic("auto_scroll_started");
+  let endState = { stalls: 0, endConfirmations: 0, complete: false };
   updateProgress();
 
   while (
-    scanningActive &&
+    scanIsRunning() &&
     !scanFinalised &&
     !finalising &&
     !autoLoadStopRequested
   ) {
     if (isListingRoute()) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await waitForScanDelay(500);
       continue;
     }
 
     if (evaluateAndFinaliseIfNeeded()) break;
 
-    collectCards();
+    scrollState = "discovering";
     await scanPage();
-    await waitForActiveWorkToSettle();
 
-    if (!scanningActive || evaluateAndFinaliseIfNeeded()) break;
-
-    // If there are still unprocessed cards in the current DOM, scan another
-    // controlled batch before moving the page.
-    const currentEntries = collectCards();
-    const hasUnprocessedVisible = currentEntries.some(entry => {
-      const status = getLedgerEntry(entry.listing.id)?.status;
-      return !isFinalStatus(status);
-    });
-
-    if (hasUnprocessedVisible) {
-      continue;
-    }
+    if (!scanIsRunning() || evaluateAndFinaliseIfNeeded()) break;
 
     const container = findResultsScrollContainer();
     const before = getScrollMetrics(container);
+    const discoveredBeforeScroll = ledgerByListingId.size;
     const step = Math.max(450, Math.round(before.client * CONFIG.autoLoadStepRatio));
     let nextTop = Math.min(before.max, before.top + step);
+    let nudgedAtBottom = false;
+    const mutationVersionBeforeScroll = domMutationVersion;
+    const scrollAttemptedAt = Date.now();
+    scrollState = "scrolling";
 
     if (before.max - before.top < 50) {
+      nudgedAtBottom = true;
       setScrollTop(
         container,
         Math.max(0, before.top - Math.round(before.client * 0.18))
       );
-      await new Promise(resolve => setTimeout(resolve, 220));
+      await waitForScanDelay(220);
       nextTop = getScrollMetrics(container).max;
     }
 
     setScrollTop(container, nextTop);
+    await waitForAnimationFrame();
 
+    scrollState = "waiting_for_growth";
     const growth = await waitForListingGrowth(
-      previousDiscoveredCount,
+      discoveredBeforeScroll,
+      container,
+      before.height,
+      mutationVersionBeforeScroll,
       Math.max(CONFIG.growthTimeoutMs, CONFIG.autoLoadPauseMs * 3)
     );
+    await scanPage();
 
     const after = getScrollMetrics(container);
     const atBottom = after.max - after.top < 70;
+    const moved = nudgedAtBottom || Math.abs(after.top - before.top) > 2;
+    const newCards = Math.max(0, growth.count - discoveredBeforeScroll);
+    performanceDiagnostics.recordScroll({
+      at: scrollAttemptedAt,
+      target: describeScrollTarget(container),
+      beforeTop: before.top,
+      afterTop: after.top,
+      beforeHeight: before.height,
+      afterHeight: after.height,
+      newCards
+    });
 
-    if (growth.grew) {
-      previousDiscoveredCount = growth.count;
-      stalls = 0;
-      endConfirmations = 0;
-    } else {
-      stalls += 1;
-      endConfirmations = atBottom ? endConfirmations + 1 : 0;
-    }
+    endState = ScannerRuntime.nextEndDetectionState(endState, {
+      grew: growth.grew,
+      targetReplaced: growth.targetReplaced,
+      moved,
+      atBottom
+    }, {
+      maxStalls: CONFIG.autoLoadMaxStalls,
+      endConfirmations: CONFIG.autoLoadEndConfirmations
+    });
 
-    if (
-      stalls >= CONFIG.autoLoadMaxStalls ||
-      endConfirmations >= CONFIG.autoLoadEndConfirmations
-    ) {
-      await finaliseScan("completed", "no_more_results");
-      break;
+    if (endState.complete) {
+      const counts = countStates();
+      if (counts.pending === 0) {
+        await finaliseScan("completed", "no_more_results");
+        break;
+      }
+      scrollState = "processing";
     }
 
     updateProgress();
     schedulePersist();
+    await waitForScanDelay(CONFIG.autoLoadPauseMs);
   }
 
   autoLoadingActive = false;
+  if (scrollState !== "paused" && scrollState !== "complete" && scrollState !== "error") {
+    scrollState = "idle";
+  }
+  recordLifecycleDiagnostic("auto_scroll_stopped");
   updateProgress();
 }
 
@@ -1436,6 +1779,7 @@ function cancelOutstandingLedgerWork() {
     if (["queued", "scanning"].includes(entry.status)) {
       upsertLedgerEntry(listingId, {
         status: "discovered",
+        workState: "unseen",
         source: "scan-stopped",
         processedAt: null
       });
@@ -1443,6 +1787,49 @@ function cancelOutstandingLedgerWork() {
   }
 
   queuedListingIds = new Set();
+}
+
+function connectDiscoveryObserver() {
+  if (observerConnected || !scanIsRunning()) return;
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observerConnected = true;
+  recordLifecycleDiagnostic("observer_connected");
+}
+
+function disconnectDiscoveryObserver() {
+  if (!observerConnected) return;
+  observer.disconnect();
+  observerConnected = false;
+  recordLifecycleDiagnostic("observer_disconnected");
+}
+
+function stopScanningActivity(reason) {
+  const autoScrollWasActive = autoLoadingActive;
+  scanningActive = false;
+  autoLoadingActive = false;
+  autoLoadStopRequested = true;
+  scrollState = reason === "user_paused" ? "paused" : reason === "error" ? "error" : "idle";
+  scanGeneration += 1;
+  clearTimeout(scanTimer);
+  clearTimeout(observerTimer);
+  clearTimeout(scrollTimer);
+  clearTimeout(progressTimer);
+  scanTimer = null;
+  observerTimer = null;
+  scrollTimer = null;
+  progressTimer = null;
+  clearDeadlineTimer();
+  clearElapsedTimer();
+  cancelScanDelays();
+  disconnectDiscoveryObserver();
+  processingQueue?.stop();
+  cancelOutstandingLedgerWork();
+  cardByListingId = new Map();
+  if (runToken) {
+    sendBackground({ type: "CANCEL_SCAN_INSPECTIONS", runToken }).catch(() => {});
+  }
+  if (autoScrollWasActive) recordLifecycleDiagnostic("auto_scroll_stopped", { reason });
+  recordLifecycleDiagnostic("scanning_activity_stopped", { reason });
 }
 
 function clearDeadlineTimer() {
@@ -1458,7 +1845,7 @@ function clearElapsedTimer() {
 function armElapsedTimer() {
   clearElapsedTimer();
   elapsedTimer = setInterval(() => {
-    if (scanningActive) {
+    if (scanIsRunning()) {
       updateProgress();
     }
   }, 1000);
@@ -1470,7 +1857,7 @@ function armDeadlineTimer() {
   if (!scanDeadlineAt) return;
 
   deadlineTimer = setTimeout(() => {
-    if (scanningActive && !scanFinalised) {
+    if (scanIsRunning() && !scanFinalised) {
       finaliseScan("timed_out", "duration_limit_reached").catch(error => {
         console.error("Marketplace Vehicle Scanner timeout finalisation failed:", error);
       });
@@ -1478,7 +1865,7 @@ function armDeadlineTimer() {
   }, Math.max(0, scanDeadlineAt - Date.now()));
 }
 
-async function finaliseRemoteIfReady() {
+async function finaliseRemoteIfReady(options = {}) {
   if (
     !remoteRun?.scanId ||
     remoteCompleted ||
@@ -1488,13 +1875,12 @@ async function finaliseRemoteIfReady() {
     return false;
   }
 
-  const uploaded = await flushPendingUploads(true);
+  const uploaded = await flushPendingUploads(true, options.allowRecreate !== false);
 
   if (!uploaded || pendingUploadsByListingId.size) {
     remoteSyncState = "error";
     remoteSyncError = remoteSyncError || "Completed results are waiting to upload.";
     updateProgress();
-    scheduleUpload(CONFIG.uploadRetryMs);
     return false;
   }
 
@@ -1518,6 +1904,10 @@ async function finaliseRemoteIfReady() {
     remoteSyncState = "synced";
     remoteSyncError = null;
     schedulePersist(0);
+    clearTimeout(uploadTimer);
+    clearTimeout(progressTimer);
+    uploadTimer = null;
+    progressTimer = null;
     updateProgress();
 
     if (
@@ -1532,7 +1922,7 @@ async function finaliseRemoteIfReady() {
 
     return true;
   } catch (error) {
-    if (isMissingRemoteScanError(error)) {
+    if (options.allowRecreate !== false && isMissingRemoteScanError(error)) {
       try {
         await recreateMissingRemoteScan();
         scheduleUpload(0);
@@ -1545,7 +1935,6 @@ async function finaliseRemoteIfReady() {
     remoteSyncState = "error";
     remoteSyncError = error instanceof Error ? error.message : String(error);
     updateProgress();
-    scheduleUpload(CONFIG.uploadRetryMs);
     return false;
   } finally {
     completionInFlight = false;
@@ -1558,44 +1947,30 @@ async function finaliseScan(status, reason) {
   }
 
   finalising = true;
-  scanningActive = false;
-  autoLoadingActive = false;
-  autoLoadStopRequested = true;
-  scanGeneration += 1;
-  clearDeadlineTimer();
-  clearElapsedTimer();
-  cancelOutstandingLedgerWork();
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "STOP");
+  recordLifecycleDiagnostic("completion_started", { status, reason });
+  stopScanningActivity(reason);
 
   scanStatus = status;
   stopReason = reason;
   scanCompletedAt = Date.now();
   scanFinalised = true;
+  scrollState = status === "failed" ? "error" : "complete";
+  lifecycleState = status === "failed"
+    ? ScannerLifecycle.transition(lifecycleState, "FAIL")
+    : status === "stopped"
+      ? ScannerLifecycle.transition(lifecycleState, "STOPPED")
+      : ScannerLifecycle.transition(lifecycleState, "COMPLETE");
+  historicalScanStatus = status;
   finalising = false;
+  clearTimeout(uploadTimer);
+  uploadTimer = null;
+  recordLifecycleDiagnostic("completion_terminal", { status, reason });
 
   updateProgress();
   schedulePersist(0);
   await finaliseRemoteIfReady();
   return true;
-}
-
-function rebuildPendingUploadsFromLedger() {
-  const rebuilt = new Map();
-
-  for (const [listingId, entry] of ledgerByListingId.entries()) {
-    if (!isFinalStatus(entry.status)) {
-      continue;
-    }
-
-    rebuilt.set(
-      listingId,
-      buildRemoteListing(
-        entry,
-        resultByListingId.get(listingId) || null
-      )
-    );
-  }
-
-  pendingUploadsByListingId = rebuilt;
 }
 
 function isMissingRemoteScanError(error) {
@@ -1608,6 +1983,17 @@ function isMissingRemoteScanError(error) {
 }
 
 async function recreateMissingRemoteScan() {
+  const hasPrunedUploads = [...ledgerByListingId.entries()].some(([listingId, entry]) =>
+    isFinalStatus(entry.status) &&
+    entry.uploadedAt &&
+    !pendingUploadsByListingId.has(listingId)
+  );
+  if (hasPrunedUploads) {
+    throw new Error(
+      "The hosted scan is missing after confirmed uploads were pruned locally. Start a new scan to avoid incomplete results."
+    );
+  }
+
   remoteSyncState = "syncing";
   remoteSyncError = null;
   updateProgress();
@@ -1621,8 +2007,6 @@ async function recreateMissingRemoteScan() {
   remoteCompleted = false;
   resultsOpenedForScanId = null;
 
-  rebuildPendingUploadsFromLedger();
-
   remoteSyncState = pendingUploadsByListingId.size
     ? "pending"
     : "synced";
@@ -1633,38 +2017,40 @@ async function recreateMissingRemoteScan() {
   return replacementRun;
 }
 
-async function retryRemoteSync() {
+async function retryRemoteSync(options = {}) {
   if (!remoteRun?.scanId) {
     throw new Error("There is no hosted scan to synchronise.");
   }
 
+  const previousLifecycleState = lifecycleState;
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "SYNC");
   remoteSyncError = null;
   remoteSyncState = "syncing";
-
-  // Always rebuild payloads from the durable ledger so fixes to payload
-  // normalisation apply to previously saved scans.
-  rebuildPendingUploadsFromLedger();
+  uploadRetryCount = 0;
+  lastUploadAttemptAt = null;
 
   updateProgress();
   schedulePersist(0);
 
   try {
-    await flushPendingUploads(true);
-  } catch (error) {
-    if (!isMissingRemoteScanError(error)) {
-      throw error;
+    try {
+      await flushPendingUploads(true, options.allowRecreate !== false);
+    } catch (error) {
+      if (!isMissingRemoteScanError(error) || options.allowRecreate === false) throw error;
+      await recreateMissingRemoteScan();
+      await flushPendingUploads(true);
     }
 
-    await recreateMissingRemoteScan();
-    await flushPendingUploads(true);
+    if (scanFinalised) {
+      await finaliseRemoteIfReady({ allowRecreate: options.allowRecreate !== false });
+    } else {
+      await syncRemoteProgress();
+    }
+    recordLifecycleDiagnostic("remote_sync_finished", { explicit: options.explicit === true });
+  } finally {
+    if (lifecycleState === "syncing") lifecycleState = previousLifecycleState;
+    updateProgress();
   }
-
-  if (scanFinalised) {
-    await finaliseRemoteIfReady();
-  } else {
-    await syncRemoteProgress();
-  }
-
   return getRuntimeProgress();
 }
 
@@ -1697,17 +2083,19 @@ function buildScanCreatePayload() {
       maxMileage: settings.maxMileage,
       unknownMileagePolicy: settings.unknownMileagePolicy,
       excludedCategories: settings.excludeCategories,
-      excludedKeywords: settings.excludedKeywords
+      excludedKeywords: settings.excludedKeywords,
+      acceptedMakes: settings.acceptedMakes,
+      acceptedModels: settings.acceptedModels
     },
     extensionVersion: EXTENSION_VERSION
   };
 }
 
 function resetRunMemory() {
+  stopScanningActivity("reset");
   clearTimeout(scanTimer);
   clearTimeout(uploadTimer);
   clearTimeout(progressTimer);
-  clearTimeout(progressStorageTimer);
   clearDeadlineTimer();
   clearElapsedTimer();
 
@@ -1715,13 +2103,17 @@ function resetRunMemory() {
   scanningActive = false;
   autoLoadingActive = false;
   autoLoadStopRequested = true;
+  scrollState = "idle";
   finalising = false;
   scanFinalised = false;
   scanStartedAt = null;
   scanCompletedAt = null;
   scanDeadlineAt = null;
   scanStatus = "idle";
+  lifecycleState = "idle";
+  historicalScanStatus = null;
   stopReason = null;
+  runToken = null;
   remoteRun = null;
   remoteCompleted = false;
   remoteSyncState = "idle";
@@ -1734,13 +2126,53 @@ function resetRunMemory() {
   queuedListingIds = new Set();
   pendingUploadsByListingId = new Map();
   uploadInFlight = false;
+  uploadRetryCount = 0;
+  lastUploadAttemptAt = null;
   progressSyncInFlight = false;
   completionInFlight = false;
+  imageDiagnosticsLogged = new Set();
+  processingQueue = createProcessingQueue();
+  resetPerformanceDiagnostics();
+}
+
+function activateRunningScan(resumed = false) {
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, resumed ? "RESUME" : "START");
+  scanStatus = "running";
+  historicalScanStatus = null;
+  scanningActive = true;
+  scanFinalised = false;
+  autoLoadStopRequested = false;
+  scrollState = "discovering";
+  scanGeneration += 1;
+  ensureProcessingQueue();
+  connectDiscoveryObserver();
+  armDeadlineTimer();
+  armElapsedTimer();
+  ensurePanel();
+  collectCards();
+  updateProgress();
+  schedulePersist(0);
+  scheduleScan(0);
+  recordLifecycleDiagnostic(resumed ? "explicit_resume" : "explicit_start");
+
+  if (settings.autoLoadEnabled) {
+    autoLoadListings().catch(error => {
+      console.error("Marketplace Vehicle Scanner auto-load failed:", error);
+      finaliseScan("failed", "error").catch(() => {});
+    });
+  }
 }
 
 async function startNewScan() {
   if (!isMarketplaceSearchRoute()) {
     throw new Error("Open a Facebook Marketplace search results page first.");
+  }
+
+  if (lifecycleState === "interrupted") {
+    throw new Error("Resume or discard the interrupted scan before starting a new scan.");
+  }
+  if (lifecycleState === "paused") {
+    throw new Error("Resume or stop the paused scan before starting a new scan.");
   }
 
   if (remoteRun?.scanId && !remoteCompleted) {
@@ -1766,6 +2198,8 @@ async function startNewScan() {
   scanStartedAt = Date.now();
   scanDeadlineAt = scanStartedAt + settings.maximumDurationSeconds * 1000;
   scanStatus = "creating";
+  lifecycleState = "idle";
+  runToken = crypto.randomUUID();
   remoteSyncState = "syncing";
   updateProgress();
 
@@ -1780,25 +2214,50 @@ async function startNewScan() {
     throw error;
   }
 
-  scanStatus = "running";
   remoteSyncState = "synced";
-  scanningActive = true;
-  autoLoadStopRequested = false;
-  armDeadlineTimer();
-  armElapsedTimer();
-  ensurePanel();
-  collectCards();
+  activateRunningScan(false);
+
+  return getRuntimeProgress();
+}
+
+async function pauseScanByUser() {
+  if (!scanIsRunning() || !remoteRun?.scanId) {
+    throw new Error("There is no running scan to pause.");
+  }
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "PAUSE");
+  scanStatus = "paused";
+  stopScanningActivity("user_paused");
+  recordLifecycleDiagnostic("explicit_pause");
   updateProgress();
   schedulePersist(0);
-  scheduleScan(0);
+  return getRuntimeProgress();
+}
 
-  if (settings.autoLoadEnabled) {
-    autoLoadListings().catch(error => {
-      console.error("Marketplace Vehicle Scanner auto-load failed:", error);
-      finaliseScan("failed", "error").catch(() => {});
-    });
+async function resumeInterruptedScan() {
+  if (!["interrupted", "paused"].includes(lifecycleState) || !remoteRun?.scanId) {
+    throw new Error("There is no paused or interrupted scan to resume.");
   }
+  if (!isMarketplaceSearchRoute() || sourceSearchRouteKey !== getRouteKey()) {
+    throw new Error("Open the original Marketplace search page before resuming.");
+  }
+  runToken = crypto.randomUUID();
+  if (!scanDeadlineAt || scanDeadlineAt <= Date.now()) {
+    scanDeadlineAt = Date.now() + settings.maximumDurationSeconds * 1000;
+  }
+  activateRunningScan(true);
+  return getRuntimeProgress();
+}
 
+async function discardInterruptedScan() {
+  if (lifecycleState !== "interrupted") {
+    throw new Error("There is no interrupted scan to discard.");
+  }
+  stopScanningActivity("explicit_discard");
+  await chrome.storage.local.remove([CONFIG.activeRunStorageKey, "runtimeProgress"]);
+  resetRunMemory();
+  recordLifecycleDiagnostic("explicit_discard");
+  removePanel();
+  updateProgress();
   return getRuntimeProgress();
 }
 
@@ -1817,6 +2276,89 @@ function serialiseMap(map) {
   return Object.fromEntries(map.entries());
 }
 
+function getActiveRunSource() {
+  return {
+    sourceSearchRouteKey,
+    settingsSnapshot: settings,
+    scanStartedAt,
+    scanCompletedAt,
+    scanDeadlineAt,
+    scanStatus,
+    lifecycleState,
+    historicalScanStatus,
+    stopReason,
+    runToken,
+    scanningActive,
+    scanFinalised,
+    remoteRun,
+    remoteCompleted,
+    remoteSyncState,
+    remoteSyncError,
+    uploadRetryCount,
+    lastUploadAttemptAt,
+    resultsOpenedForScanId,
+    ledger: serialiseMap(ledgerByListingId),
+    pendingUploads: serialiseMap(pendingUploadsByListingId),
+    lifecycleDiagnostics,
+    filterFingerprint: getFilterFingerprint()
+  };
+}
+
+function buildPersistedActiveRun() {
+  let state = ScannerStorage.buildCompactState(getActiveRunSource(), { ...storageHealth });
+  const estimatedBytes = storageFixedBytes + ScannerStorage.approximateStorageItemBytes(
+    CONFIG.activeRunStorageKey,
+    state
+  );
+  storageHealth.estimatedBytes = estimatedBytes;
+  storageHealth.nearSoftLimit = estimatedBytes >= storageHealth.softLimitBytes * 0.8;
+  state.storageHealth = { ...storageHealth };
+  return state;
+}
+
+async function removeStorageKeysInChunks(keys, chunkSize = 100) {
+  for (let index = 0; index < keys.length; index += chunkSize) {
+    await chrome.storage.local.remove(keys.slice(index, index + chunkSize));
+  }
+}
+
+async function pruneObsoleteStorage() {
+  const allData = await chrome.storage.local.get(null);
+  const keysToRemove = Object.keys(allData).filter(key =>
+    key.startsWith("listing:") ||
+    key.startsWith("searchSession:") ||
+    key === "lastActiveSearchRouteKey" ||
+    key === "activeSearchSession"
+  );
+  if (keysToRemove.length) await removeStorageKeysInChunks(keysToRemove);
+  storageHealth.pruneCount += keysToRemove.length;
+  return keysToRemove.length;
+}
+
+function enterPersistenceDegradedMode() {
+  storageHealth.persistenceDegraded = true;
+  storageHealth.nearSoftLimit = true;
+  if (scanIsRunning()) {
+    lifecycleState = ScannerLifecycle.transition(lifecycleState, "PAUSE");
+    scanStatus = "paused";
+    stopReason = "storage_quota";
+    stopScanningActivity("storage_quota");
+    recordLifecycleDiagnostic("storage_persistence_degraded");
+  }
+  renderPanel(getRuntimeProgress());
+}
+
+function pauseAtStorageSoftLimit() {
+  if (!scanIsRunning()) return;
+  lifecycleState = ScannerLifecycle.transition(lifecycleState, "PAUSE");
+  scanStatus = "paused";
+  stopReason = "storage_soft_limit";
+  stopScanningActivity("storage_soft_limit");
+  recordLifecycleDiagnostic("storage_soft_limit_pause");
+  updateProgress();
+  schedulePersist(0);
+}
+
 function schedulePersist(delay = CONFIG.persistDelayMs) {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
@@ -1832,57 +2374,131 @@ async function persistActiveRun() {
     return;
   }
 
-  await chrome.storage.local.set({
-    [CONFIG.activeRunStorageKey]: {
-      version: 19,
-      sourceSearchRouteKey,
-      settingsSnapshot: settings,
-      scanStartedAt,
-      scanCompletedAt,
-      scanDeadlineAt,
-      scanStatus,
-      stopReason,
-      scanningActive,
-      scanFinalised,
-      remoteRun,
-      remoteCompleted,
-      remoteSyncState,
-      remoteSyncError,
-      resultsOpenedForScanId,
-      ledger: serialiseMap(ledgerByListingId),
-      results: serialiseMap(resultByListingId),
-      pendingUploads: serialiseMap(pendingUploadsByListingId),
-      filterFingerprint: getFilterFingerprint(),
-      savedAt: Date.now()
+  const outcome = await ScannerStorage.writeWithQuotaRecovery({
+    buildValue: buildPersistedActiveRun,
+    write: value => chrome.storage.local.set({ [CONFIG.activeRunStorageKey]: value }),
+    prune: pruneObsoleteStorage,
+    onQuota: () => {
+      storageHealth.lastQuotaFailure = new Date().toISOString();
+      storageHealth.nearSoftLimit = true;
+      console.warn("Marketplace Vehicle Scanner recovery storage reached its quota; pruning completed data.");
+    },
+    onDegraded: () => {
+      storageHealth.lastQuotaFailure = new Date().toISOString();
+      enterPersistenceDegradedMode();
+      console.warn("Marketplace Vehicle Scanner paused because compact recovery state could not be saved.");
     }
   });
+
+  if (outcome.ok) {
+    storageHealth.persistenceDegraded = false;
+    if (storageHealth.estimatedBytes >= storageHealth.softLimitBytes) {
+      pauseAtStorageSoftLimit();
+    }
+  }
+  return outcome.ok;
+}
+
+async function migrateExistingStorage() {
+  const allData = await chrome.storage.local.get(null);
+  const before = ScannerStorage.measureStorageData(allData);
+  const plan = ScannerStorage.migrationPlan(allData, CONFIG.activeRunStorageKey);
+
+  storageFixedBytes = Object.entries(allData)
+    .filter(([key]) => key !== CONFIG.activeRunStorageKey && !key.startsWith("listing:"))
+    .reduce((total, [key, value]) =>
+      total + ScannerStorage.approximateStorageItemBytes(key, value), 0);
+  storageHealth.estimatedBytes = before.totalBytes;
+  storageHealth.nearSoftLimit = before.totalBytes >= storageHealth.softLimitBytes * 0.8;
+
+  if (!plan.changed) return { changed: false, before, after: before };
+
+  if (plan.keysToRemove.length) {
+    await removeStorageKeysInChunks(plan.keysToRemove);
+    storageHealth.pruneCount += plan.keysToRemove.length;
+  }
+  if (plan.migratedState) {
+    plan.migratedState.storageHealth = { ...storageHealth };
+    await ScannerStorage.writeWithQuotaRecovery({
+      buildValue: () => plan.migratedState,
+      write: value => chrome.storage.local.set({ [CONFIG.activeRunStorageKey]: value }),
+      prune: pruneObsoleteStorage,
+      onQuota: () => {
+        storageHealth.lastQuotaFailure = new Date().toISOString();
+      },
+      onDegraded: () => {
+        storageHealth.lastQuotaFailure = new Date().toISOString();
+        storageHealth.persistenceDegraded = true;
+      }
+    });
+  }
+
+  const afterData = await chrome.storage.local.get(null);
+  const after = ScannerStorage.measureStorageData(afterData);
+  storageHealth.estimatedBytes = after.totalBytes;
+  storageHealth.nearSoftLimit = after.totalBytes >= storageHealth.softLimitBytes * 0.8;
+  console.info("Marketplace Vehicle Scanner storage migration:", {
+    schemaVersion: ScannerStorage.SCHEMA_VERSION,
+    beforeBytes: before.totalBytes,
+    afterBytes: after.totalBytes,
+    removedLegacyCaches: plan.removedLegacyCaches,
+    removedObsoleteKeys: plan.keysToRemove.length - plan.removedLegacyCaches
+  });
+  return { changed: true, before, after };
 }
 
 async function restoreActiveRun() {
   const stored = await chrome.storage.local.get(CONFIG.activeRunStorageKey);
   const state = stored[CONFIG.activeRunStorageKey];
 
-  if (!state || state.version !== 19 || !state.remoteRun?.scanId) {
+  if (!state || ![19, ScannerStorage.SCHEMA_VERSION].includes(state.version) || !state.remoteRun?.scanId) {
+    lifecycleState = "idle";
+    scanningActive = false;
+    recordLifecycleDiagnostic("startup_idle", { persisted: false });
     return false;
   }
 
-  settings = { ...DEFAULT_SETTINGS, ...(state.settingsSnapshot || {}) };
+  const startup = ScannerLifecycle.classifyPersistedRun(state);
+  settings = {
+    ...DEFAULT_SETTINGS,
+    ...(state.settingsSnapshot || {}),
+    acceptedMakes: VehicleIdentity.normaliseMakeFilters(state.settingsSnapshot?.acceptedMakes),
+    acceptedModels: VehicleIdentity.normaliseFilterValues(state.settingsSnapshot?.acceptedModels)
+  };
   sourceSearchRouteKey = state.sourceSearchRouteKey || null;
   scanStartedAt = state.scanStartedAt || null;
   scanCompletedAt = state.scanCompletedAt || null;
   scanDeadlineAt = state.scanDeadlineAt || null;
   scanStatus = state.scanStatus || "stopped";
+  lifecycleState = startup.lifecycleState;
+  historicalScanStatus = startup.historicalStatus;
   stopReason = state.stopReason || null;
-  scanningActive = Boolean(state.scanningActive && !state.scanFinalised);
+  runToken = state.runToken || null;
+  scanningActive = false;
+  autoLoadingActive = false;
+  autoLoadStopRequested = true;
+  scrollState = lifecycleState === "paused" ? "paused" : "idle";
   scanFinalised = Boolean(state.scanFinalised);
   remoteRun = state.remoteRun;
   remoteCompleted = Boolean(state.remoteCompleted);
   remoteSyncState = state.remoteSyncState || "idle";
   remoteSyncError = state.remoteSyncError || null;
+  uploadRetryCount = Math.max(0, Math.min(CONFIG.uploadMaxRetries, Number(state.uploadRetryCount) || 0));
+  lastUploadAttemptAt = Number(state.lastUploadAttemptAt) || null;
   resultsOpenedForScanId = state.resultsOpenedForScanId || null;
   ledgerByListingId = new Map(Object.entries(state.ledger || {}));
-  resultByListingId = new Map(Object.entries(state.results || {}));
-  pendingUploadsByListingId = new Map(Object.entries(state.pendingUploads || {}));
+  resultByListingId = new Map();
+  pendingUploadsByListingId = new Map(Object.entries(
+    ScannerStorage.compactPendingUploads(state.pendingUploads)
+  ));
+  storageHealth = {
+    ...(state.storageHealth || {}),
+    ...storageHealth,
+    softLimitBytes: ScannerStorage.SOFT_LIMIT_BYTES
+  };
+  lifecycleDiagnostics = Array.isArray(state.lifecycleDiagnostics)
+    ? state.lifecycleDiagnostics.slice(-30)
+    : [];
   queuedListingIds = new Set();
   cardByListingId = new Map();
 
@@ -1890,42 +2506,40 @@ async function restoreActiveRun() {
     if (["queued", "scanning"].includes(entry.status)) {
       upsertLedgerEntry(listingId, {
         status: "discovered",
+        workState: "unseen",
         source: "restored-after-interruption",
         processedAt: null
       });
     }
   }
 
+  if (lifecycleState === "interrupted") {
+    historicalScanStatus = state.scanStatus || "running";
+    scanStatus = "interrupted";
+  }
+
   ensurePanel();
+  recordLifecycleDiagnostic("startup_restored", {
+    persistedStatus: state.scanStatus || "unknown",
+    startupState: lifecycleState
+  });
   updateProgress();
 
-  if (scanFinalised && !remoteCompleted) {
-    retryRemoteSync().catch(() => {});
-  } else if (
-    scanningActive &&
-    sourceSearchRouteKey === getRouteKey() &&
-    isMarketplaceSearchRoute()
-  ) {
-    scanGeneration += 1;
-    autoLoadStopRequested = false;
-    armDeadlineTimer();
-    armElapsedTimer();
-    collectCards();
-    scheduleScan(0);
-
-    if (settings.autoLoadEnabled) {
-      autoLoadListings().catch(error => {
-        console.error("Marketplace Vehicle Scanner restored auto-load failed:", error);
-      });
-    }
-  } else if (scanningActive) {
-    scanningActive = false;
-    scanStatus = "stopped";
-    stopReason = "extension_closed";
-    scanCompletedAt = Date.now();
-    scanFinalised = true;
-    schedulePersist(0);
-    retryRemoteSync().catch(() => {});
+  if (startup.allowSyncRecovery) {
+    retryRemoteSync({ allowRecreate: false }).then(() => {
+      lifecycleState = "idle";
+      historicalScanStatus = scanStatus;
+      recordLifecycleDiagnostic("startup_sync_recovered");
+      updateProgress();
+      schedulePersist(0);
+    }).catch(error => {
+      lifecycleState = "idle";
+      remoteSyncState = "error";
+      remoteSyncError = error instanceof Error ? error.message : String(error);
+      recordLifecycleDiagnostic("startup_sync_failed");
+      updateProgress();
+      schedulePersist(0);
+    });
   }
 
   return true;
@@ -1953,6 +2567,7 @@ async function clearLocalScannerState() {
   const keysToRemove = Object.keys(allData).filter(key =>
     key === CONFIG.activeRunStorageKey ||
     key === "runtimeProgress" ||
+    key.startsWith("listing:") ||
     key.startsWith("searchSession:") ||
     key === "lastActiveSearchRouteKey" ||
     key === "activeSearchSession"
@@ -1986,13 +2601,14 @@ async function loadSettings() {
     minPrice: normaliseNumber(stored.minPrice),
     maxPrice: normaliseNumber(stored.maxPrice),
     maxMileage: normaliseNumber(stored.maxMileage),
-    excludeCategories: Array.isArray(stored.excludeCategories)
-      ? stored.excludeCategories
-      : ["S", "N", "C", "D"],
+    excludeCategories: ["S", "N", "C", "D"],
     excludedKeywords: Array.isArray(stored.excludedKeywords)
       ? stored.excludedKeywords
-      : []
+      : [],
+    acceptedMakes: VehicleIdentity.normaliseMakeFilters(stored.acceptedMakes),
+    acceptedModels: VehicleIdentity.normaliseFilterValues(stored.acceptedModels)
   };
+  resetPerformanceDiagnostics();
 }
 
 function ensurePanel() {
@@ -2047,6 +2663,10 @@ function ensurePanel() {
     const syncText = document.createElement("div");
     syncText.className = "mcf-panel-sync";
 
+    const storageText = document.createElement("div");
+    storageText.className = "mcf-panel-storage";
+    storageText.hidden = true;
+
     const actions = document.createElement("div");
     actions.className = "mcf-panel-actions";
 
@@ -2081,7 +2701,7 @@ function ensurePanel() {
     });
 
     actions.append(stopButton, resultsButton, retryButton);
-    root.append(header, counters, limitText, progressTrack, syncText, actions);
+    root.append(header, counters, limitText, progressTrack, syncText, storageText, actions);
     document.documentElement.appendChild(root);
 
     panelElements = {
@@ -2094,6 +2714,7 @@ function ensurePanel() {
       limitText,
       progressBar,
       syncText,
+      storageText,
       stopButton,
       resultsButton,
       retryButton
@@ -2151,6 +2772,11 @@ function renderPanel(progress) {
         ? "Dashboard is up to date."
         : "Connected to dashboard.";
 
+  panel.storageText.hidden = !progress.storageHealth?.nearSoftLimit;
+  panel.storageText.textContent = progress.storageHealth?.persistenceDegraded
+    ? "Scan paused: local resume protection is temporarily unavailable."
+    : "Scanner local recovery storage is nearly full. Uploaded results are being cleaned automatically.";
+
   panel.stopButton.hidden = !progress.scanningActive;
   panel.resultsButton.disabled = !progress.resultsUrl;
   panel.retryButton.hidden = !progress.canRetrySync || progress.remoteSyncState !== "error";
@@ -2188,6 +2814,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return respond(stopScanByUser());
   }
 
+  if (message?.type === "PAUSE_SCAN") {
+    return respond(pauseScanByUser());
+  }
+
+  if (message?.type === "RESUME_SCAN") {
+    return respond(resumeInterruptedScan());
+  }
+
+  if (message?.type === "DISCARD_INTERRUPTED_SCAN") {
+    return respond(discardInterruptedScan());
+  }
+
   if (message?.type === "GET_SCAN_STATE") {
     sendResponse({ ok: true, result: getRuntimeProgress() });
     return false;
@@ -2198,7 +2836,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "RETRY_REMOTE_SYNC") {
-    return respond(retryRemoteSync());
+    return respond(retryRemoteSync({ explicit: true }));
   }
 
   if (message?.type === "CLEAR_LOCAL_SCANNER_STATE") {
@@ -2209,9 +2847,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 const observer = new MutationObserver(mutations => {
-  if (!scanningActive || isListingRoute()) return;
+  if (!scanIsRunning() || isListingRoute()) return;
 
   if (mutations.every(isExtensionMutation)) return;
+  domMutationVersion += 1;
 
   clearTimeout(observerTimer);
   observerTimer = setTimeout(() => {
@@ -2225,13 +2864,8 @@ async function initialiseScanner() {
     .catch(() => false);
   if (controlledDetailTab) return;
 
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true
-  });
-
   window.addEventListener("scroll", () => {
-    if (!scanningActive || isListingRoute()) return;
+    if (!scanIsRunning() || isListingRoute()) return;
 
     clearTimeout(scrollTimer);
     scrollTimer = setTimeout(() => scheduleScan(0), CONFIG.scanDebounceMs);
@@ -2240,15 +2874,37 @@ async function initialiseScanner() {
   window.addEventListener("popstate", () => {
     currentRouteKey = getRouteKey();
 
-    if (scanningActive && sourceSearchRouteKey === currentRouteKey) {
+    if (scanIsRunning() && sourceSearchRouteKey === currentRouteKey) {
       scheduleScan(100);
     }
   });
 
   cleanupLegacyCardDecorations();
-  const restored = await loadSettings().then(restoreActiveRun);
+  await loadSettings();
+  await migrateExistingStorage();
+  const restored = await restoreActiveRun();
   if (!restored) updateProgress();
 }
+
+globalThis.measureKelmarScannerStorage = async function measureKelmarScannerStorage() {
+  const report = ScannerStorage.measureStorageData(await chrome.storage.local.get(null));
+  console.table(report.rows);
+  console.table(report.largestCollections);
+  console.info("Marketplace Vehicle Scanner storage totals:", {
+    totalBytes: report.totalBytes,
+    softLimitBytes: report.softLimitBytes,
+    averageListingBytes: report.averageListingBytes,
+    maximumListingBytes: report.maximumListingBytes,
+    duplicateListingIds: report.duplicateListingIds,
+    imageUrlCount: report.imageUrlCount,
+    imageUrlBytes: report.imageUrlBytes,
+    descriptionBytes: report.descriptionBytes,
+    diagnosticsBytes: report.diagnosticsBytes,
+    completedWorkBytes: report.completedWorkBytes,
+    pendingUploadBytes: report.pendingUploadBytes
+  });
+  return report;
+};
 
 initialiseScanner().catch(error => {
   console.error("Marketplace Vehicle Scanner initialisation failed:", error);

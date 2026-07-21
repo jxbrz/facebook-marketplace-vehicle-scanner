@@ -3,36 +3,41 @@ const crypto = require("node:crypto");
 const assert = require("node:assert/strict");
 
 const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const contentSource = fs.readFileSync("content.js", "utf8");
 const expectedId = "aipljeeiecdcnkbbakphcddacbbgkpmf";
 const expectedPermissions = ["storage", "tabs"];
 const expectedHostPermissions = [
   "https://www.facebook.com/*",
   "https://facebook.com/*",
-  "https://*/*",
-  "http://localhost/*",
-  "http://127.0.0.1/*"
+  "https://sourcing.kelmarvehiclesltd.co.uk/*",
+  "https://facebook-web-filter.vercel.app/*"
 ];
 
 assert.equal(manifest.manifest_version, 3);
 assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-assert.equal(manifest.version, "23.0.1");
+assert.equal(packageJson.version, manifest.version);
+assert.match(
+  contentSource,
+  new RegExp(`const EXTENSION_VERSION = ["']${manifest.version.replaceAll(".", "\\.")}["'];`)
+);
 assert.ok(typeof manifest.key === "string" && manifest.key.length > 100);
 assert.deepEqual(manifest.permissions, expectedPermissions);
 assert.deepEqual(manifest.host_permissions, expectedHostPermissions);
 assert.deepEqual(manifest.content_scripts[0].js, [
   "category-detector.js",
+  "listing-category-pipeline.js",
   "mileage-utils.js",
+  "scanner-lifecycle.js",
+  "scanner-diagnostics.js",
+  "scanner-runtime.js",
+  "scanner-storage.js",
+  "vehicle-identity.js",
+  "listing-details-extractor.js",
   "content.js"
 ]);
 assert.equal(manifest.content_scripts[0].exclude_matches, undefined);
-assert.deepEqual(manifest.content_scripts[1], {
-  matches: [
-    "https://www.facebook.com/marketplace/item/*",
-    "https://facebook.com/marketplace/item/*"
-  ],
-  js: ["listing-details-extractor.js"],
-  run_at: "document_idle"
-});
+assert.equal(manifest.content_scripts.length, 1);
 
 const digest = crypto
   .createHash("sha256")
@@ -45,4 +50,8 @@ const extensionId = [...digest]
 
 assert.equal(extensionId, expectedId);
 assert.equal(JSON.stringify(manifest).includes("extensionApiToken"), false);
+assert.equal(manifest.name, "Kelmar Vehicle Scanner");
+assert.equal(manifest.homepage_url, "https://sourcing.kelmarvehiclesltd.co.uk/support");
+assert.deepEqual(Object.keys(manifest.icons), ["16", "32", "48", "128"]);
+for (const icon of Object.values(manifest.icons)) assert.equal(fs.existsSync(icon), true, `Missing ${icon}`);
 console.log(`Manifest valid: v${manifest.version}, extension ID ${extensionId}`);

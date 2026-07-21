@@ -3,18 +3,20 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
-function createHarness(sendMessage) {
+function createHarness(sendMessage, overrides = {}) {
   const runtimeListeners = [];
   const created = [];
   const updated = [];
   const removed = [];
+  const storageSets = [];
+  const storageValues = { ...(overrides.storageValues || {}) };
   const noOpEvent = { addListener() {}, removeListener() {} };
   const context = {
     AbortController,
     URL,
     clearTimeout,
     console,
-    fetch: async () => { throw new Error("Unexpected fetch"); },
+    fetch: overrides.fetch || (async () => { throw new Error("Unexpected fetch"); }),
     importScripts() {},
     setTimeout(callback, delay) {
       if (delay < 1000) return queueMicrotask(callback);
@@ -31,15 +33,90 @@ function createHarness(sendMessage) {
         onUpdated: noOpEvent,
         onRemoved: noOpEvent
       },
-      storage: { local: {} }
+      storage: {
+        local: {
+          async get() { return { ...storageValues }; },
+          async set(values) {
+            storageSets.push(values);
+            Object.assign(storageValues, values);
+          }
+        }
+      }
     },
-    CategoryDetector: {},
-    ListingDetailsExtractor: {},
+    CategoryDetector: overrides.CategoryDetector || {},
+    ListingDetailsExtractor: overrides.ListingDetailsExtractor || {},
     PayloadNormalizer: {}
   };
   vm.runInNewContext(fs.readFileSync("background.js", "utf8"), context);
-  return { context, created, updated, removed, runtimeListeners };
+  return { context, created, updated, removed, runtimeListeners, storageSets, storageValues };
 }
+
+test("rendered inspection uses low bounded concurrency instead of a global promise chain", () => {
+  const source = fs.readFileSync("background.js", "utf8");
+  assert.match(source, /MAX_CONCURRENT_RENDERED_INSPECTIONS = 2/);
+  assert.match(source, /MIN_RENDERED_START_GAP_MS = 750/);
+  assert.match(source, /pendingRenderedInspections/);
+  assert.doesNotMatch(source, /renderedInspectionChain/);
+});
+
+test("migrates the legacy dashboard origin and sends authenticated requests directly to production", async () => {
+  const requests = [];
+  const harness = createHarness(
+    async () => ({ ok: true, result: {} }),
+    {
+      storageValues: {
+        dashboardUrl: "https://facebook-web-filter.vercel.app/",
+        extensionApiToken: "test-token"
+      },
+      fetch: async (url, options) => {
+        requests.push({ url: url.toString(), options });
+        return {
+          ok: true,
+          status: 200,
+          async text() { return "{}"; }
+        };
+      }
+    }
+  );
+
+  await harness.context.remoteRequest("/api/extension/scans", {
+    method: "POST",
+    body: { targetMatches: 1 }
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(
+    requests[0].url,
+    "https://sourcing.kelmarvehiclesltd.co.uk/api/extension/scans"
+  );
+  assert.equal(requests[0].options.redirect, "error");
+  assert.equal(requests[0].options.headers.Authorization, "Bearer test-token");
+  assert.equal(harness.storageSets.length, 1);
+  assert.equal(
+    harness.storageSets[0].dashboardUrl,
+    "https://sourcing.kelmarvehiclesltd.co.uk"
+  );
+});
+
+test("leaves non-legacy configured dashboard origins unchanged", () => {
+  const harness = createHarness(async () => ({ ok: true, result: {} }));
+  assert.equal(
+    harness.context.normaliseDashboardUrl("https://review.example.test/"),
+    "https://review.example.test"
+  );
+});
+
+test("migrates legacy results URLs without changing their path", () => {
+  const harness = createHarness(async () => ({ ok: true, result: {} }));
+  assert.equal(
+    harness.context.normaliseResultsUrl(
+      "https://facebook-web-filter.vercel.app/scans/scan-123",
+      "https://sourcing.kelmarvehiclesltd.co.uk",
+      "scan-123"
+    ),
+    "https://sourcing.kelmarvehiclesltd.co.uk/scans/scan-123"
+  );
+});
 
 test("marks an inactive blank tab before navigation and always removes it after extraction", async () => {
   let resolveExtraction;
@@ -76,4 +153,69 @@ test("removes the controlled tab when rendered messaging fails", async () => {
     /not ready/
   );
   assert.deepEqual(harness.removed, [77]);
+});
+
+test("run cancellation closes its controlled tab and prevents a rendered result", async () => {
+  let resolveExtraction;
+  const harness = createHarness(() => new Promise(resolve => { resolveExtraction = resolve; }));
+  const inspection = harness.context.inspectRenderedListing(
+    "https://www.facebook.com/marketplace/item/123/",
+    "123",
+    "run-1"
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  const cancelled = await harness.context.cancelScanInspections("run-1");
+  assert.equal(cancelled.closedTabs, 1);
+  resolveExtraction({ ok: true, result: { fullDescription: "Too late" } });
+  await assert.rejects(inspection, /cancelled/);
+  assert.ok(harness.removed.includes(77));
+});
+
+test("final background classification includes the rendered seller description", async () => {
+  const realExtractor = require("../listing-details-extractor.js");
+  const harness = createHarness(
+    async () => ({
+      ok: true,
+      result: {
+        fullDescription: "Cat S",
+        listingTitle: "2018 Volkswagen Polo",
+        vehicleAttributes: {},
+        imageUrls: [],
+        extractionSource: "rendered-semantic-dom"
+      }
+    }),
+    {
+      CategoryDetector: require("../category-detector.js"),
+      ListingDetailsExtractor: {
+        extractListingDetails() {
+          return {
+            fullDescription: "Well maintained",
+            listingTitle: "2018 Volkswagen Polo",
+            vehicleAttributes: {},
+            imageUrls: [],
+            extractionSource: "embedded-json",
+            structuredDetailsFound: true
+          };
+        },
+        mergeListingDetails: realExtractor.mergeListingDetails
+      },
+      fetch: async url => ({
+        ok: true,
+        url,
+        async text() {
+          return "<html><body>Marketplace listing 123 Volkswagen Polo</body></html>";
+        }
+      })
+    }
+  );
+
+  const result = await harness.context.inspectListing(
+    "https://www.facebook.com/marketplace/item/123/",
+    "run-1"
+  );
+  assert.equal(result.fullDescription, "Cat S");
+  assert.equal(result.detected, true);
+  assert.equal(result.category, "S");
+  assert.equal(result.source, "facebook-rendered-description");
+  assert.equal(result.categoryClassificationDiagnostics.reclassifiedAfterRenderedExtraction, true);
 });
