@@ -827,6 +827,11 @@ async function getRemoteScan(scanId) {
   return response.data || {};
 }
 
+async function getRemoteSavedSearches() {
+  const response = await remoteRequest("/api/extension/saved-searches");
+  return response.data || { searches: [] };
+}
+
 function openExternalUrl(url) {
   let parsed;
 
@@ -894,6 +899,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "REMOTE_GET_SCAN") {
     return respond(getRemoteScan(message.scanId));
+  }
+
+  if (message?.type === "REMOTE_GET_SAVED_SEARCHES") {
+    return respond(getRemoteSavedSearches());
   }
 
   if (message?.type === "OPEN_EXTERNAL_URL") {

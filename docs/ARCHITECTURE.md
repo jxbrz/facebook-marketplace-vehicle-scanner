@@ -18,7 +18,10 @@ The hosted Next.js application authenticates extension requests, validates struc
 - `category-detector.js`: pure normalization, controlled matching, negation, evidence, and deterministic conflict resolution.
 - `listing-category-pipeline.js`: final trusted-evidence aggregation, provisional/final diagnostics, and final outcome counters.
 - `scanner-lifecycle.js`: pure persisted-state classification and explicit transition rules.
-- `vehicle-identity.js`: pure make/model normalization, controlled aliases, title-context rules, and diagnostics.
+- `vehicle-catalogue.js`: serialisable UK make/model catalogue, aliases, dependency checks, and conservative title detection.
+- `vehicle-identity.js`: identity detection and compatibility helpers; it does not decide whether a listing matches.
+- `listing-facts.js`: canonical facts normalizer shared by card, static-detail, and rendered-detail paths.
+- `filter-domain.js`: schema-v2 normalization, validation, fingerprinting, unknown policies, and the sole `match | reject | unresolved` evaluator.
 - `payload-normalizer.js`: pure final upload normalization and validation.
 - `popup.*`: local configuration and lifecycle controls.
 - `styles.css`: the scanner status panel only; no native Facebook result hiding, dimming, badges, or card decoration.
@@ -46,7 +49,9 @@ Facebook CDN URLs are references, not archived assets, and may expire. The serve
 
 Static service-worker fetches can contain only Facebook's initial HTML and omit Relay-hydrated detail. The background worker creates at most two inactive blank tabs with a conservative start gap, marks each as controlled before navigating it to the item, waits for the existing authenticated page to render, requests only the semantic listing snapshot, and closes each tab in all outcomes. This prevents one slow rendered listing from blocking every worker while retaining final seller-description/category evidence. The scanner content script checks the tab marker and skips initialization only there; ordinary visible item navigation retains the existing stop/recovery behavior. Permissions, storage keys, and the visible search tab are unchanged.
 
-Discovery/scrolling and detail processing are separate coordinated loops. Visible and recycled-card identities enter a canonical-ID ledger, in-memory outcomes and cheap card filters run first, and only plausible candidates enter a 3-worker/12-committed-item queue. Auto-scroll re-detects the closest card-bearing scroll target on every attempt and never waits for that queue to drain. Uploads remain an independent single-flight, ID-keyed batch flow.
+Discovery/scrolling and detail processing are separate coordinated loops. Visible and recycled-card identities enter a canonical-ID ledger. Canonical card facts are evaluated first, but only proven rejections become final; unknown required facts enter the 3-worker/12-committed-item detail queue. Static and rendered evidence rebuild the same facts object before the one final evaluator runs. Auto-scroll re-detects the closest card-bearing scroll target on every attempt and never waits for that queue to drain. Uploads remain an independent single-flight, ID-keyed batch flow.
+
+Each active run snapshots its complete schema-v2 filter configuration and fingerprint. A new or changed search therefore affects new work without rewriting historical scan rows. Rejections and unresolved outcomes retain one bounded reason in the ledger, while the popup derives capped aggregate counts; completed full listing payloads are still not retained after upload.
 
 ## Stopping invariants
 

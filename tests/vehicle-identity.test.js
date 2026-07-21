@@ -90,3 +90,17 @@ test("rejection diagnostics remain bounded and deterministic", () => {
   assert.equal(result.diagnostics.matchingRule, "explicit_alias_and_token_match_v1");
   assert.ok(result.diagnostics.normalisedCandidate.length <= 160);
 });
+
+test("identity detection is separate from the canonical filter decision", () => {
+  const result = VehicleIdentity.identifyVehicle({
+    listingTitle: "2019 Volkswagen Polo 1.0 TSI"
+  }, {
+    makes: ["Volkswagen"],
+    models: ["Polo"]
+  });
+
+  assert.equal(result.detectedMake, "Volkswagen");
+  assert.equal(result.detectedModel, "Polo");
+  assert.equal("accepted" in result, false);
+  assert.equal("rejectionCode" in result, false);
+});

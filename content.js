@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.0.8";
+const EXTENSION_VERSION = "23.1.0";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -39,6 +39,8 @@ const DEFAULT_SETTINGS = {
   excludedKeywords: [],
   acceptedMakes: [],
   acceptedModels: [],
+  activeSavedSearchId: null,
+  activeFilterConfig: null,
   scannerDebugDiagnostics: false
 };
 
@@ -419,38 +421,28 @@ function cleanupLegacyCardDecorations() {
 }
 
 function getFilterFingerprint() {
-  return JSON.stringify({
-    minYear: settings.minYear,
-    maxYear: settings.maxYear,
-    minPrice: settings.minPrice,
-    maxPrice: settings.maxPrice,
-    maxMileage: settings.maxMileage,
-    unknownMileagePolicy: settings.unknownMileagePolicy,
-    excludeCategories: [...settings.excludeCategories].sort(),
-    acceptedMakes: settings.acceptedMakes.map(VehicleIdentity.normaliseKey).sort(),
-    acceptedModels: settings.acceptedModels.map(VehicleIdentity.normaliseKey).sort(),
-    excludedKeywords: settings.excludedKeywords
-      .map(value => String(value).trim().toLowerCase())
-      .filter(Boolean)
-      .sort()
-  });
+  return FilterDomain.filterFingerprint(settings.activeFilterConfig || settings);
 }
 
 function enrichVehicleIdentity(metadata, result, final = false) {
-  const identity = VehicleIdentity.evaluateFilters(settings, {
+  const config = FilterDomain.normaliseFilterConfig(settings.activeFilterConfig || settings);
+  const identity = VehicleIdentity.identifyVehicle({
     structuredMake: result?.detectedMake,
     structuredModel: result?.detectedModel,
     listingTitle: result?.listingTitle,
     vehicleAttributes: result?.vehicleAttributes,
     cardTitle: metadata.title
-  }, { final });
+  }, {
+    makes: config.vehicle.makes,
+    models: config.vehicle.models,
+    final
+  });
   return {
     ...(result || {}),
     detectedMake: identity.detectedMake,
     detectedModel: identity.detectedModel,
     makeModelSource: identity.source,
-    vehicleIdentityDiagnostics: identity.diagnostics,
-    identityFilterDecision: identity
+    vehicleIdentityDiagnostics: identity.diagnostics
   };
 }
 
@@ -458,118 +450,72 @@ function combineCategoryResult(metadata, result = null) {
   return ListingCategoryPipeline.classifyFinalCategory(metadata, result);
 }
 
-function evaluateFilters(metadata, result = null) {
-  const combined = {
-    year: toNullableVehicleYear(
-      metadata.year ?? result?.year
-    ),
-    price: toNullableNonNegativeInteger(
-      metadata.price ?? result?.price
-    ),
+function vehicleAttribute(result, labels) {
+  const wanted = new Set(labels.map(VehicleCatalogue.key));
+  for (const [label, value] of Object.entries(result?.vehicleAttributes || {})) {
+    if (wanted.has(VehicleCatalogue.key(label))) return value;
+  }
+  return null;
+}
+
+function buildCanonicalFacts(metadata = {}, result = null) {
+  const detailAvailable = Boolean(result);
+  const category = result?.detected && ["S", "N", "C", "D"].includes(result.category)
+    ? `cat_${result.category.toLowerCase()}`
+    : null;
+  return ListingFacts.normaliseListingFacts({
+    listingId: result?.listingId || metadata.listingId,
+    listingUrl: result?.finalUrl || metadata.url,
+    title: result?.listingTitle || metadata.title,
+    description: result?.fullDescription,
+    price: toNullableNonNegativeInteger(result?.price) ?? toNullableNonNegativeInteger(metadata.price),
     mileage: getMileageForFilter(metadata, result),
-    category: result?.category ?? null,
-    categoryDetected: Boolean(result?.detected),
-    cardText: metadata.cardText || ""
+    year: toNullableVehicleYear(result?.year) ?? toNullableVehicleYear(metadata.year),
+    make: result?.detectedMake || vehicleAttribute(result, ["make", "manufacturer", "marque"]),
+    model: result?.detectedModel || vehicleAttribute(result, ["model", "vehicle model"]),
+    derivative: vehicleAttribute(result, ["trim", "derivative", "variant"]),
+    transmission: result?.transmission || metadata.transmission,
+    fuelType: result?.fuelType || metadata.fuelType,
+    colour: vehicleAttribute(result, ["colour", "color", "primary colour"]),
+    bodyType: vehicleAttribute(result, ["body type", "body style", "vehicle type"]),
+    categoryStatus: category,
+    categoryDetected: Boolean(category),
+    categoryEvidence: result?.match,
+    sellerType: result?.sellerType || metadata.sellerType,
+    location: result?.location || metadata.location,
+    cardText: metadata.cardText,
+    sources: {
+      price: result?.price !== null && result?.price !== undefined ? "listing_detail" : "search_card",
+      mileage: result?.mileageDetail ? "listing_detail" : metadata.mileage !== null && metadata.mileage !== undefined ? "search_card" : "unknown",
+      year: result?.year !== null && result?.year !== undefined ? "listing_detail" : "search_card",
+      make: result?.makeModelSource || (detailAvailable ? "listing_detail" : "search_card"),
+      model: result?.makeModelSource || (detailAvailable ? "listing_detail" : "search_card"),
+      transmission: result?.transmission ? "listing_detail" : "search_card",
+      fuelType: result?.fuelType ? "listing_detail" : "search_card",
+      colour: detailAvailable ? "listing_detail" : "unknown",
+      bodyType: detailAvailable ? "listing_detail" : "unknown",
+      categoryStatus: detailAvailable ? "trusted_listing_evidence" : "search_card"
+    }
+  });
+}
+
+function evaluateFilters(metadata, result = null, options = {}) {
+  const facts = buildCanonicalFacts(metadata, result);
+  const evaluation = FilterDomain.evaluateFilters(
+    facts,
+    settings.activeFilterConfig || settings,
+    { phase: options.phase || (result ? "final" : "prefilter") }
+  );
+  const primaryReason = evaluation.rejectionReasons[0] || evaluation.unresolvedReasons[0] || null;
+  return {
+    ...evaluation,
+    facts,
+    rejected: evaluation.decision === "reject",
+    reason: primaryReason,
+    code: evaluation.decision === "reject"
+      ? "filter_rejected"
+      : evaluation.decision === "unresolved" ? "filter_unresolved" : null
   };
-
-  if (
-    settings.minYear !== null &&
-    combined.year !== null &&
-    combined.year < settings.minYear
-  ) {
-    return {
-      rejected: true,
-      reason: `Year ${combined.year} below ${settings.minYear}`,
-      code: "year"
-    };
-  }
-
-  if (
-    settings.maxYear !== null &&
-    combined.year !== null &&
-    combined.year > settings.maxYear
-  ) {
-    return {
-      rejected: true,
-      reason: `Year ${combined.year} above ${settings.maxYear}`,
-      code: "year"
-    };
-  }
-
-  if (
-    settings.minPrice !== null &&
-    combined.price !== null &&
-    combined.price < settings.minPrice
-  ) {
-    return {
-      rejected: true,
-      reason: `£${combined.price.toLocaleString()} below minimum`,
-      code: "price"
-    };
-  }
-
-  if (
-    settings.maxPrice !== null &&
-    combined.price !== null &&
-    combined.price > settings.maxPrice
-  ) {
-    return {
-      rejected: true,
-      reason: `£${combined.price.toLocaleString()} above maximum`,
-      code: "price"
-    };
-  }
-
-  if (settings.maxMileage !== null) {
-    if (
-      combined.mileage !== null &&
-      combined.mileage > settings.maxMileage
-    ) {
-      return {
-        rejected: true,
-        reason: `${combined.mileage.toLocaleString()} miles exceeds limit`,
-        code: "mileage"
-      };
-    }
-
-    if (
-      combined.mileage === null &&
-      settings.unknownMileagePolicy === "hide"
-    ) {
-      return {
-        rejected: true,
-        reason: "Mileage unavailable",
-        code: "mileage-unknown"
-      };
-    }
-  }
-
-  if (result?.identityFilterDecision?.rejectionCode) {
-    return {
-      rejected: true,
-      reason: result.identityFilterDecision.reason,
-      code: result.identityFilterDecision.rejectionCode
-    };
-  }
-
-  const categoryOutcome = ListingCategoryPipeline.categoryOutcome(result);
-  if (categoryOutcome.rejected) return categoryOutcome;
-
-  const lowerText = combined.cardText.toLowerCase();
-
-  for (const keyword of settings.excludedKeywords) {
-    const normalisedKeyword = String(keyword || "").trim().toLowerCase();
-
-    if (normalisedKeyword && lowerText.includes(normalisedKeyword)) {
-      return {
-        rejected: true,
-        reason: `Excluded keyword: ${keyword}`,
-        code: "keyword"
-      };
-    }
-  }
-
-  return { rejected: false, reason: null, code: null };
 }
 
 function isFinalStatus(status) {
@@ -632,7 +578,7 @@ function markFinal(listingId, status, options = {}) {
   const entry = upsertLedgerEntry(listingId, {
     status,
     workState: options.workState || (status === "unavailable" ? "failed_final" : "processed"),
-    reason: options.reason || (status === "matched" ? "No selected filter matched" : null),
+    reason: options.reason || (status === "matched" ? "Matches selected filters" : null),
     code: options.code || (status === "unavailable" ? "unavailable" : null),
     source: options.source || "listing-result",
     metadata: options.metadata,
@@ -656,16 +602,23 @@ function classifyListing(listingId, metadata, result, source) {
     true
   );
   const evaluation = evaluateFilters(metadata, combinedResult);
-  const status = evaluation.rejected ? "rejected" : "matched";
+  const status = evaluation.decision === "reject"
+    ? "rejected"
+    : evaluation.decision === "unresolved" ? "unavailable" : "matched";
 
-  resultByListingId.set(listingId, combinedResult);
+  const classifiedResult = {
+    ...combinedResult,
+    canonicalFacts: evaluation.facts,
+    filterEvaluation: evaluation
+  };
+  resultByListingId.set(listingId, classifiedResult);
 
   return markFinal(listingId, status, {
     reason: evaluation.reason,
     code: evaluation.code,
     source,
     metadata,
-    result: combinedResult
+    result: classifiedResult
   });
 }
 
@@ -683,12 +636,19 @@ function countStates() {
     queued: 0,
     scanning: 0,
     activeWork: 0,
-    pending: 0
+    pending: 0,
+    uploaded: 0,
+    rejectionReasonCounts: {}
   };
 
   for (const entry of ledgerByListingId.values()) {
     if (entry.status === "queued") counts.queued += 1;
     if (entry.status === "scanning") counts.scanning += 1;
+    if (entry.uploadedAt) counts.uploaded += 1;
+    if (entry.reason && ["rejected", "unavailable"].includes(entry.status)) {
+      const reason = truncate(entry.reason, 120);
+      counts.rejectionReasonCounts[reason] = (counts.rejectionReasonCounts[reason] || 0) + 1;
+    }
   }
 
   counts.activeWork = counts.queued + counts.scanning;
@@ -728,6 +688,8 @@ function getRuntimeProgress() {
 
   return {
     ...counts,
+    inspecting: counts.scanning,
+    unresolved: counts.unavailable,
     scanningActive,
     executionState: scanIsRunning() ? "running" : "idle",
     lifecycleState,
@@ -970,6 +932,7 @@ function normaliseFreshFacebookUkMileage(result) {
 
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
+  const facts = result?.canonicalFacts || buildCanonicalFacts(metadata, result);
   const listingImages = ListingDetailsExtractor.resolveListingImages(result, {
     listingId: entry.listingId,
     sourceListingId: metadata.imageOwnerListingId,
@@ -1013,24 +976,24 @@ function buildRemoteListing(entry, result = null) {
   return {
     externalListingId: entry.listingId,
     sourceUrl: entry.url,
-    title: result?.listingTitle || metadata.title || null,
-    price: metadata.price ?? result?.price ?? null,
+    title: facts.title,
+    price: facts.price,
     currency: "GBP",
-    year: metadata.year ?? result?.year ?? null,
+    year: facts.year,
     mileage: hasSourceMileage
       ? mileageUnit === "mi" ? mileageValue : null
-      : metadata.mileage ?? result?.mileage ?? null,
+      : facts.mileage,
     mileageValue: hasSourceMileage ? mileageValue : null,
     mileageUnit: hasSourceMileage ? mileageUnit : null,
     mileageOriginalText: hasSourceMileage
       ? truncate(result?.mileageDetail?.originalText, 120)
       : null,
     mileageUnitSource: hasSourceMileage ? mileageUnitSource : null,
-    location: metadata.location || null,
-    sellerType: metadata.sellerType || null,
-    fuelType: metadata.fuelType || result?.fuelType || null,
-    transmission: metadata.transmission || result?.transmission || null,
-    bodyStyle: null,
+    location: facts.location,
+    sellerType: facts.sellerType === "unknown" ? null : facts.sellerType,
+    fuelType: facts.fuelType === "unknown" ? null : facts.fuelType,
+    transmission: facts.transmission === "unknown" ? null : facts.transmission,
+    bodyStyle: facts.bodyType === "unknown" ? null : facts.bodyType,
     imageUrl: listingImages.imageUrl,
     imageUrls: listingImages.imageUrls,
     imageExtractionStatus: listingImages.imageExtractionStatus,
@@ -1066,6 +1029,26 @@ function buildRemoteListing(entry, result = null) {
       fetchedMileage: result?.mileage ?? null,
       fetchedPrice: result?.price ?? null,
       vehicleIdentity: result?.vehicleIdentityDiagnostics || null,
+      canonicalFacts: {
+        make: facts.make,
+        model: facts.model,
+        derivative: facts.derivative,
+        colour: facts.colour,
+        bodyType: facts.bodyType,
+        categoryStatus: facts.categoryStatus,
+        unknownFields: facts.unknownFields,
+        sources: facts.sources,
+        confidence: facts.confidence
+      },
+      filterEvaluation: result?.filterEvaluation ? {
+        decision: result.filterEvaluation.decision,
+        rejectionReasons: result.filterEvaluation.rejectionReasons,
+        unresolvedReasons: result.filterEvaluation.unresolvedReasons,
+        warnings: result.filterEvaluation.warnings,
+        evaluatedValues: result.filterEvaluation.evaluatedValues,
+        missingRequiredFields: result.filterEvaluation.missingRequiredFields,
+        diagnostics: result.filterEvaluation.diagnostics
+      } : null,
       preliminaryCategoryResult: result?.categoryClassificationDiagnostics?.preliminaryCategoryResult || null,
       finalCategoryResult: result?.categoryClassificationDiagnostics?.finalCategoryResult || null,
       finalCategoryEvidenceSource: result?.categoryClassificationDiagnostics?.finalCategoryEvidenceSource || null,
@@ -1469,20 +1452,20 @@ async function scanPage() {
       combineCategoryResult(metadata, null),
       false
     );
-    const localEvaluation = evaluateFilters(metadata, localResult);
+    const localEvaluation = evaluateFilters(metadata, localResult, { phase: "prefilter" });
     performanceDiagnostics.recordListing(listing.id, "cheapFilterComplete");
 
-    if (
-      localEvaluation.rejected &&
-      ["year", "price", "mileage", "mileage-unknown", "keyword", "make_not_allowed", "model_not_allowed"]
-        .includes(localEvaluation.code)
-    ) {
+    if (localEvaluation.decision === "reject") {
       markFinal(listing.id, "rejected", {
         reason: localEvaluation.reason,
         code: localEvaluation.code,
         source: "search-card",
         metadata,
-        result: localResult
+        result: {
+          ...localResult,
+          canonicalFacts: localEvaluation.facts,
+          filterEvaluation: localEvaluation
+        }
       });
       continue;
     }
@@ -2075,18 +2058,7 @@ function buildScanCreatePayload() {
     targetMatches: settings.targetMatches,
     maximumProcessed: settings.maximumProcessed,
     maximumDurationSeconds: settings.maximumDurationSeconds,
-    filters: {
-      minYear: settings.minYear,
-      maxYear: settings.maxYear,
-      minPrice: settings.minPrice,
-      maxPrice: settings.maxPrice,
-      maxMileage: settings.maxMileage,
-      unknownMileagePolicy: settings.unknownMileagePolicy,
-      excludedCategories: settings.excludeCategories,
-      excludedKeywords: settings.excludedKeywords,
-      acceptedMakes: settings.acceptedMakes,
-      acceptedModels: settings.acceptedModels
-    },
+    filters: settings.activeFilterConfig,
     extensionVersion: EXTENSION_VERSION
   };
 }
@@ -2463,7 +2435,10 @@ async function restoreActiveRun() {
     ...DEFAULT_SETTINGS,
     ...(state.settingsSnapshot || {}),
     acceptedMakes: VehicleIdentity.normaliseMakeFilters(state.settingsSnapshot?.acceptedMakes),
-    acceptedModels: VehicleIdentity.normaliseFilterValues(state.settingsSnapshot?.acceptedModels)
+    acceptedModels: VehicleIdentity.normaliseFilterValues(state.settingsSnapshot?.acceptedModels),
+    activeFilterConfig: FilterDomain.normaliseFilterConfig(
+      state.settingsSnapshot?.activeFilterConfig || state.settingsSnapshot || {}
+    )
   };
   sourceSearchRouteKey = state.sourceSearchRouteKey || null;
   scanStartedAt = state.scanStartedAt || null;
@@ -2584,29 +2559,32 @@ async function clearLocalScannerState() {
 
 async function loadSettings() {
   const stored = await chrome.storage.local.get(Object.keys(DEFAULT_SETTINGS));
+  const activeFilterConfig = FilterDomain.normaliseFilterConfig(stored.activeFilterConfig || stored);
 
   settings = {
     ...DEFAULT_SETTINGS,
     ...stored,
-    targetMatches: clampInteger(stored.targetMatches, 1, 250, 20),
-    maximumProcessed: clampInteger(stored.maximumProcessed, 1, 500, 150),
+    targetMatches: activeFilterConfig.scan.targetMatches,
+    maximumProcessed: activeFilterConfig.scan.maximumProcessed,
     maximumDurationSeconds: clampInteger(
-      stored.maximumDurationSeconds,
+      activeFilterConfig.scan.maximumDurationSeconds,
       30,
       3600,
       300
     ),
-    minYear: normaliseNumber(stored.minYear),
-    maxYear: normaliseNumber(stored.maxYear),
-    minPrice: normaliseNumber(stored.minPrice),
-    maxPrice: normaliseNumber(stored.maxPrice),
-    maxMileage: normaliseNumber(stored.maxMileage),
-    excludeCategories: ["S", "N", "C", "D"],
-    excludedKeywords: Array.isArray(stored.excludedKeywords)
-      ? stored.excludedKeywords
-      : [],
-    acceptedMakes: VehicleIdentity.normaliseMakeFilters(stored.acceptedMakes),
-    acceptedModels: VehicleIdentity.normaliseFilterValues(stored.acceptedModels)
+    autoLoadEnabled: activeFilterConfig.scan.autoLoadEnabled,
+    autoOpenResults: activeFilterConfig.scan.autoOpenResults,
+    minYear: activeFilterConfig.vehicle.minYear,
+    maxYear: activeFilterConfig.vehicle.maxYear,
+    minPrice: activeFilterConfig.priceMileage.minPrice,
+    maxPrice: activeFilterConfig.priceMileage.maxPrice,
+    maxMileage: activeFilterConfig.priceMileage.maxMileage,
+    excludeCategories: [],
+    excludedKeywords: activeFilterConfig.text.excludedKeywords,
+    acceptedMakes: activeFilterConfig.vehicle.makes,
+    acceptedModels: activeFilterConfig.vehicle.models,
+    activeSavedSearchId: stored.activeSavedSearchId || null,
+    activeFilterConfig
   };
   resetPerformanceDiagnostics();
 }

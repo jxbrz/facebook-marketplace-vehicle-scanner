@@ -18,7 +18,11 @@ The server compares the Bearer token timing-safely, accepts only the exact confi
 
 Creates a running scan. Required limits are positive bounded integers. The response includes `scanId`, `status`, and `resultsUrl`.
 
-The existing JSON `filters` object may include optional normalized `acceptedMakes` and `acceptedModels` arrays. Empty/missing arrays preserve existing behavior. No new endpoint or database column is required.
+For schema-v2 scans, `filters` is the complete normalized canonical configuration: vehicle identity/year ranges, price/mileage ranges, specification include/exclude selections, structured category mode/statuses, keyword rules, per-field unknown policies, and scan behaviour. The three top-level scan limits must agree with `filters.scan`. Legacy unversioned filter JSON remains accepted for historical clients.
+
+### `GET /api/extension/saved-searches`
+
+Returns active searches that a dashboard user has made available to the extension. Each item contains only its ID, name, schema version, normalized `filterConfig`, and update timestamp; owner identity and private searches are never returned.
 
 ### `POST /api/extension/scans/:scanId/listings`
 
@@ -35,6 +39,8 @@ Listing fields:
 - timing: offset-aware ISO `discoveredAt` and `processedAt`.
 
 Listing status is exactly `matched`, `rejected`, or `unavailable`. The existing generic rejection code `category` remains unchanged for dashboard compatibility; `categoryType` carries S/N/C/D.
+
+When a scan carries schema-v2 filters, ingestion independently rebuilds the available canonical facts and re-evaluates any client-supplied `matched` outcome. It may downgrade that outcome to `rejected` or `unavailable`, but it never promotes a client rejection. This is a defence against accidental client-path bypass; the server still does not access Facebook.
 
 The v23 fields are optional, so old v19-v23.0.0 payloads and restored runs remain valid. The extension omits malformed optional image/profile URLs and non-serialisable or credential-shaped attributes before upload; the server independently validates and rejects malformed or excessive values. Description trimming preserves internal line breaks. The 256 KB request limit is unchanged.
 
