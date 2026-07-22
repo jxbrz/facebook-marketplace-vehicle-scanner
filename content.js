@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.2.1";
+const EXTENSION_VERSION = "23.2.2";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -114,6 +114,9 @@ let processingQueue = null;
 let domMutationVersion = 0;
 let debugSummaryLastLoggedAt = 0;
 let imageDiagnosticsLogged = new Set();
+let filterDiagnosticsByListingId = new Map();
+let diagnosticTimelineByListingId = new Map();
+let usingPersistedSettingsSnapshot = false;
 const scanDelayWaits = new Set();
 
 function resetPerformanceDiagnostics() {
@@ -160,6 +163,182 @@ function maybeLogImageExtractionDiagnostics(listingId, result, metadata = {}) {
     carouselControlsDetected: diagnostics.carouselControlsDetected === true,
     cardFallbackUsed: resolved.imageExtractionSource === "card_thumbnail"
   });
+}
+
+function diagnosticReasons(values) {
+  return (Array.isArray(values) ? values : []).slice(0, 6).map(value => truncate(value, 120));
+}
+
+function knownCanonicalFields(facts = {}) {
+  return ["price", "mileage", "year", "make", "model", "transmission", "fuelType", "colour", "bodyType", "categoryStatus"]
+    .filter(field => facts[field] !== null && facts[field] !== undefined && facts[field] !== "unknown");
+}
+
+function diagnosticReasonCodesForEvaluation(evaluation = {}) {
+  if (evaluation.decision === "match") return ["match"];
+  const rules = [
+    [/year/i, "year"], [/price/i, "price"], [/mileage/i, "mileage"],
+    [/make/i, "make"], [/model/i, "model"], [/transmission/i, "transmission"],
+    [/fuel/i, "fuel"], [/colour/i, "colour"], [/body/i, "body"],
+    [/category|repaired/i, "category"], [/keyword/i, "keyword"]
+  ];
+  const mapReasons = (reasons, suffix) => reasons.map(reason => {
+    const match = rules.find(([pattern]) => pattern.test(String(reason)));
+    return `${match?.[1] || "filter"}_${suffix}`;
+  });
+  return [...new Set([
+    ...mapReasons(evaluation.rejectionReasons || [], "rejected"),
+    ...mapReasons(evaluation.unresolvedReasons || [], "detail_required")
+  ])].slice(0, 12);
+}
+
+function buildUnrestrictedCoreDiagnosticConfig() {
+  return FilterDomain.normaliseFilterConfig({
+    advancedFiltersEnabled: false,
+    includeUnavailableOptional: true,
+    vehicle: { makes: [], models: [], minYear: null, maxYear: null },
+    priceMileage: { minPrice: null, maxPrice: null, minMileage: null, maxMileage: null },
+    specification: {
+      transmissions: { mode: "any", include: [], exclude: [] },
+      fuelTypes: { mode: "any", include: [], exclude: [] },
+      colours: { mode: "any", include: [], exclude: [] },
+      bodyTypes: { mode: "any", include: [], exclude: [] }
+    },
+    category: { mode: "any", statuses: [], includeRepairedVehicles: true },
+    text: { requiredKeywords: [], excludedKeywords: [] },
+    scan: settings.activeFilterConfig?.scan || {}
+  });
+}
+
+function getDiagnosticFilterProfile() {
+  const config = FilterDomain.normaliseFilterConfig(settings.activeFilterConfig || settings);
+  const restrictionKeys = [];
+  if (config.vehicle.makes.length) restrictionKeys.push("make");
+  if (config.vehicle.models.length) restrictionKeys.push("model");
+  for (const field of ["minYear", "maxYear"]) if (config.vehicle[field] !== null) restrictionKeys.push(field);
+  for (const field of ["minPrice", "maxPrice", "minMileage", "maxMileage"]) {
+    if (config.priceMileage[field] !== null) restrictionKeys.push(field);
+  }
+  if (config.specification.transmissions.mode !== "any") restrictionKeys.push("transmission");
+  if (config.category.mode !== "any") restrictionKeys.push("category");
+  if (config.text.excludedKeywords.length) restrictionKeys.push("excludedKeywords");
+  if (config.advancedFiltersEnabled) restrictionKeys.push("advanced");
+  return {
+    source: settings.activeSavedSearchId ? "dashboard_saved_search" : "local_draft",
+    categoryMode: config.category.mode,
+    advancedFiltersEnabled: config.advancedFiltersEnabled,
+    restrictionKeys
+  };
+}
+
+function recordFilterDiagnostic(listingId, patch = {}, complete = false) {
+  if (!settings.scannerDebugDiagnostics) return;
+  const listingIdHash = ListingDetailsExtractor.shortPathHash(String(listingId || ""));
+  if (!filterDiagnosticsByListingId.has(listingIdHash) && filterDiagnosticsByListingId.size >= 40) return;
+  const current = filterDiagnosticsByListingId.get(listingIdHash) || {
+    listingIdHash,
+    filterSource: settings.activeSavedSearchId ? "dashboard_saved_search" : "local_draft",
+    activeSavedSearchId: settings.activeSavedSearchId || "local",
+    filterFingerprintHash: ListingDetailsExtractor.shortPathHash(getFilterFingerprint())
+  };
+  const next = { ...current, ...patch };
+  filterDiagnosticsByListingId.set(listingIdHash, next);
+  if (complete) console.info("Marketplace Vehicle Scanner filter decision:", next);
+}
+
+function sanitiseDiagnosticText(value, limit = 120) {
+  return truncate(String(value || "")
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/(bearer|token|cookie|password|authorization|session)\s*[:=]?\s*\S+/gi, "$1=[redacted]")
+    .replace(/\s+/g, " ")
+    .trim(), limit);
+}
+
+function diagnosticError(error) {
+  return {
+    errorClass: sanitiseDiagnosticText(error?.name || "Error", 40),
+    errorMessage: sanitiseDiagnosticText(error instanceof Error ? error.message : error, 120)
+  };
+}
+
+function safeDiagnosticDetails(details = {}) {
+  const allowedBooleanFields = [
+    "cardUrlResolved", "detailRequired", "provenReject", "staticAttempted",
+    "staticCompleted", "renderedAttempted", "renderedCompleted", "payloadBuilt",
+    "payloadValid", "uploadAttempted", "uploadCompleted",
+    "hasDescription", "hasMileage", "hasPrice", "hasYear", "hasIdentity", "hasImages"
+  ];
+  const allowedNumberFields = ["durationMs", "imageCount"];
+  const safe = {};
+  for (const field of allowedBooleanFields) {
+    if (typeof details[field] === "boolean") safe[field] = details[field];
+  }
+  for (const field of allowedNumberFields) {
+    if (Number.isFinite(details[field])) safe[field] = Math.max(0, Math.round(details[field]));
+  }
+  for (const field of ["decision", "outcome", "errorClass", "errorMessage"]) {
+    if (details[field] !== null && details[field] !== undefined) {
+      safe[field] = sanitiseDiagnosticText(details[field], field === "errorMessage" ? 120 : 50);
+    }
+  }
+  for (const field of ["knownFields", "reasonCodes"]) {
+    if (Array.isArray(details[field])) {
+      safe[field] = details[field].slice(0, 12).map(value => sanitiseDiagnosticText(value, 50));
+    }
+  }
+  return safe;
+}
+
+function recordDiagnosticStage(listingId, stage, details = {}) {
+  if (!settings.scannerDebugDiagnostics) return;
+  const listingIdHash = ListingDetailsExtractor.shortPathHash(String(listingId || ""));
+  if (!diagnosticTimelineByListingId.has(listingIdHash) && diagnosticTimelineByListingId.size >= 8) return;
+  const current = diagnosticTimelineByListingId.get(listingIdHash) || {
+    listingIdHash,
+    stages: []
+  };
+  if (current.stages.length >= 24) return;
+  current.stages.push({
+    stage: sanitiseDiagnosticText(stage, 50),
+    at: new Date().toISOString(),
+    ...safeDiagnosticDetails(details)
+  });
+  diagnosticTimelineByListingId.set(listingIdHash, current);
+}
+
+function getScannerDiagnosticReport() {
+  const counts = countStates();
+  const readyToCopy = Boolean(
+    scanStartedAt &&
+    scanCompletedAt &&
+    !scanningActive
+  );
+  return {
+    reportVersion: 1,
+    mode: "normal_debug",
+    uploadEnabled: true,
+    maximumListings: null,
+    startedAt: scanStartedAt ? new Date(scanStartedAt).toISOString() : null,
+    completedAt: scanCompletedAt ? new Date(scanCompletedAt).toISOString() : null,
+    elapsedMs: scanStartedAt
+      ? (scanCompletedAt || Date.now()) - scanStartedAt
+      : 0,
+    readyToCopy,
+    status: scanStatus,
+    stopReason: stopReason ? sanitiseDiagnosticText(stopReason, 50) : null,
+    filterProfile: getDiagnosticFilterProfile(),
+    counts: {
+      discovered: counts.discovered,
+      processed: counts.processed,
+      matched: counts.matched,
+      rejected: counts.rejected,
+      unavailable: counts.unavailable
+    },
+    listings: [...diagnosticTimelineByListingId.values()].map(item => ({
+      listingIdHash: item.listingIdHash,
+      stages: item.stages.map(stage => ({ ...stage }))
+    }))
+  };
 }
 
 function recordLifecycleDiagnostic(event, details = {}) {
@@ -566,6 +745,12 @@ function markDiscovered(listing, metadata) {
   } else {
     performanceDiagnostics.recordListing(listing.id, "discovered");
     performanceDiagnostics.increment("discovered");
+    recordDiagnosticStage(listing.id, "discovered", {
+      cardUrlResolved: Boolean(listing.url)
+    });
+    recordDiagnosticStage(listing.id, "card_metadata_extracted", {
+      knownFields: knownCanonicalFields(buildCanonicalFacts(metadata, null))
+    });
   }
 
   return upsertLedgerEntry(listing.id, {
@@ -594,6 +779,11 @@ function markFinal(listingId, status, options = {}) {
   schedulePersist();
   scheduleRemoteProgressSync();
   evaluateAndFinaliseIfNeeded();
+  recordDiagnosticStage(listingId, "terminal", {
+    decision: status,
+    outcome: options.code || status,
+    reasonCodes: options.code ? [options.code] : []
+  });
   return entry;
 }
 
@@ -614,6 +804,40 @@ function classifyListing(listingId, metadata, result, source) {
     filterEvaluation: evaluation
   };
   resultByListingId.set(listingId, classifiedResult);
+  recordDiagnosticStage(listingId, "facts_merged", {
+    knownFields: knownCanonicalFields(evaluation.facts),
+    hasDescription: Boolean(result?.fullDescription),
+    hasMileage: evaluation.facts.mileage !== null && evaluation.facts.mileage !== undefined,
+    hasPrice: evaluation.facts.price !== null && evaluation.facts.price !== undefined,
+    hasYear: evaluation.facts.year !== null && evaluation.facts.year !== undefined,
+    hasIdentity: Boolean(evaluation.facts.make || evaluation.facts.model),
+    hasImages: Array.isArray(result?.imageUrls) && result.imageUrls.length > 0,
+    imageCount: Array.isArray(result?.imageUrls) ? result.imageUrls.length : 0
+  });
+  recordDiagnosticStage(listingId, "final_evaluation", {
+    decision: evaluation.decision,
+    detailRequired: evaluation.detailRequired === true,
+    provenReject: evaluation.provenReject === true,
+    reasonCodes: diagnosticReasonCodesForEvaluation(evaluation)
+  });
+  if (settings.scannerDebugDiagnostics) {
+    const unrestrictedCoreEvaluation = FilterDomain.evaluateFilters(
+      evaluation.facts,
+      buildUnrestrictedCoreDiagnosticConfig(),
+      { phase: "final" }
+    );
+    recordDiagnosticStage(listingId, "unrestricted_core_evaluation", {
+      decision: unrestrictedCoreEvaluation.decision,
+      detailRequired: unrestrictedCoreEvaluation.detailRequired === true,
+      provenReject: unrestrictedCoreEvaluation.provenReject === true,
+      reasonCodes: diagnosticReasonCodesForEvaluation(unrestrictedCoreEvaluation)
+    });
+  }
+  recordFilterDiagnostic(listingId, {
+    canonicalKnownFields: knownCanonicalFields(evaluation.facts),
+    finalDecision: evaluation.decision,
+    finalReasons: diagnosticReasons(evaluation.rejectionReasons.length ? evaluation.rejectionReasons : evaluation.unresolvedReasons)
+  }, true);
 
   return markFinal(listingId, status, {
     reason: evaluation.reason,
@@ -728,7 +952,11 @@ function getRuntimeProgress() {
     invariantValid: counts.invariantValid,
     lifecycleDiagnostics,
     performanceDiagnostics: performanceDiagnostics.snapshot(),
-    storageHealth: { ...storageHealth }
+    storageHealth: { ...storageHealth },
+    activeFilterSource: settings.activeSavedSearchId ? "dashboard_saved_search" : "local_draft",
+    activeSavedSearchId: settings.activeSavedSearchId || null,
+    filterFingerprintHash: ListingDetailsExtractor.shortPathHash(getFilterFingerprint()),
+    usingPersistedSettingsSnapshot
   };
 }
 
@@ -1072,10 +1300,12 @@ function buildRemoteListing(entry, result = null) {
 function queueRemoteListing(entry, result = null) {
   if (!remoteRun?.scanId || !isFinalStatus(entry.status)) return;
 
-  pendingUploadsByListingId.set(
-    entry.listingId,
-    ScannerStorage.sanitisePendingUpload(buildRemoteListing(entry, result))
-  );
+  const payload = ScannerStorage.sanitisePendingUpload(buildRemoteListing(entry, result));
+  pendingUploadsByListingId.set(entry.listingId, payload);
+  recordDiagnosticStage(entry.listingId, "payload_built", {
+    payloadBuilt: true,
+    payloadValid: true
+  });
 
   if (uploadRetryCount >= CONFIG.uploadMaxRetries) {
     remoteSyncState = "error";
@@ -1158,6 +1388,12 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
 
       const uploadStartedAt = Date.now();
       lastUploadAttemptAt = uploadStartedAt;
+      for (const [listingId] of batchEntries) {
+        recordDiagnosticStage(listingId, "upload_attempted", {
+          uploadAttempted: true,
+          uploadCompleted: false
+        });
+      }
       try {
         await sendBackground({
           type: "REMOTE_UPLOAD_LISTINGS",
@@ -1171,6 +1407,14 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
           batchEntries.length,
           true
         );
+        for (const [listingId] of batchEntries) {
+          recordDiagnosticStage(listingId, "upload_completed", {
+            uploadAttempted: true,
+            uploadCompleted: true,
+            durationMs: Date.now() - uploadStartedAt,
+            outcome: "accepted"
+          });
+        }
         uploadRetryCount = 0;
       } catch (error) {
         performanceDiagnostics.recordUpload(
@@ -1181,6 +1425,15 @@ async function flushPendingUploads(force = false, allowRecreate = true) {
         );
         if (/timed out/i.test(error instanceof Error ? error.message : String(error))) {
           performanceDiagnostics.increment("timeouts");
+        }
+        for (const [listingId] of batchEntries) {
+          recordDiagnosticStage(listingId, "upload_failed", {
+            uploadAttempted: true,
+            uploadCompleted: false,
+            durationMs: Date.now() - uploadStartedAt,
+            outcome: "failed",
+            ...diagnosticError(error)
+          });
         }
         throw error;
       }
@@ -1325,6 +1578,9 @@ function createProcessingQueue() {
           source: details.retry ? "scan-retry-queue" : "scan-queue"
         });
         performanceDiagnostics.recordListing(listing.id, "queued");
+        recordDiagnosticStage(listing.id, "queued_for_detail", {
+          outcome: details.retry ? "retry" : "queued"
+        });
         if (details.retry) performanceDiagnostics.increment("retries");
       } else if (state === "processing") {
         upsertLedgerEntry(listing.id, {
@@ -1334,6 +1590,7 @@ function createProcessingQueue() {
           source: "listing-request"
         });
         performanceDiagnostics.recordListing(listing.id, "processingStart");
+        recordDiagnosticStage(listing.id, "detail_inspection_started");
       } else if (state === "failed_retryable") {
         upsertLedgerEntry(listing.id, {
           status: "queued",
@@ -1344,6 +1601,16 @@ function createProcessingQueue() {
       } else if (state === "failed_final") {
         queuedListingIds.delete(listing.id);
         const message = details.error instanceof Error ? details.error.message : String(details.error);
+        recordFilterDiagnostic(listing.id, {
+          detailExtractionAttempted: true,
+          detailExtractionOutcome: "failed",
+          finalDecision: "unavailable",
+          finalReasons: [truncate(message, 120)]
+        }, true);
+        recordDiagnosticStage(listing.id, "detail_inspection_failed", {
+          ...diagnosticError(details.error),
+          outcome: "failed"
+        });
         if (/timed out|abort/i.test(message)) performanceDiagnostics.increment("timeouts");
         markFinal(listing.id, "unavailable", {
           reason: message,
@@ -1382,6 +1649,10 @@ async function processListing(entry, generation) {
   if (!scanIsRunning() || generation !== scanGeneration) return;
 
   performanceDiagnostics.recordListing(listing.id, "detailFetchStart");
+  recordFilterDiagnostic(listing.id, { detailExtractionAttempted: true, detailExtractionOutcome: "started" });
+  recordDiagnosticStage(listing.id, "static_extraction_started", {
+    staticAttempted: true
+  });
   let result;
   try {
     result = normaliseFreshFacebookUkMileage(
@@ -1394,6 +1665,22 @@ async function processListing(entry, generation) {
   if (!scanIsRunning() || generation !== scanGeneration) return;
 
   maybeLogImageExtractionDiagnostics(listing.id, result, metadata);
+  recordFilterDiagnostic(listing.id, { detailExtractionOutcome: "completed" });
+  const inspection = result?.inspectionDiagnostics || {};
+  recordDiagnosticStage(listing.id, "static_extraction_completed", {
+    staticAttempted: inspection.staticAttempted === true,
+    staticCompleted: inspection.staticCompleted === true,
+    durationMs: inspection.staticDurationMs,
+    outcome: inspection.staticOutcome || "completed"
+  });
+  recordDiagnosticStage(listing.id, "rendered_extraction_completed", {
+    renderedAttempted: inspection.renderedAttempted === true,
+    renderedCompleted: inspection.renderedCompleted === true,
+    durationMs: inspection.renderedDurationMs,
+    outcome: inspection.renderedOutcome || "not_reported",
+    errorClass: inspection.renderedErrorClass,
+    errorMessage: inspection.renderedErrorMessage
+  });
 
   await saveCachedResult(listing.id, result);
   classifyListing(listing.id, metadata, result, "facebook-listing-page");
@@ -1455,9 +1742,35 @@ async function scanPage() {
       false
     );
     const localEvaluation = evaluateFilters(metadata, localResult, { phase: "prefilter" });
+    recordDiagnosticStage(listing.id, "card_facts_normalized", {
+      knownFields: knownCanonicalFields(localEvaluation.facts)
+    });
+    recordDiagnosticStage(listing.id, "prefilter_evaluated", {
+      decision: localEvaluation.decision,
+      detailRequired: localEvaluation.detailRequired === true,
+      provenReject: localEvaluation.provenReject === true,
+      reasonCodes: diagnosticReasonCodesForEvaluation(localEvaluation)
+    });
+    recordFilterDiagnostic(listing.id, {
+      prefilterDecision: localEvaluation.decision,
+      prefilterRejectionReasons: diagnosticReasons(localEvaluation.rejectionReasons),
+      prefilterUnresolvedReasons: diagnosticReasons(localEvaluation.unresolvedReasons),
+      detailRequired: localEvaluation.detailRequired,
+      provenReject: localEvaluation.provenReject,
+      detailExtractionAttempted: false,
+      canonicalKnownFields: knownCanonicalFields(localEvaluation.facts)
+    });
     performanceDiagnostics.recordListing(listing.id, "cheapFilterComplete");
 
-    if (localEvaluation.decision === "reject") {
+    if (
+      localEvaluation.decision === "reject" &&
+      localEvaluation.provenReject === true &&
+      localEvaluation.detailRequired === false
+    ) {
+      recordFilterDiagnostic(listing.id, {
+        finalDecision: "reject",
+        finalReasons: diagnosticReasons(localEvaluation.rejectionReasons)
+      }, true);
       markFinal(listing.id, "rejected", {
         reason: localEvaluation.reason,
         code: localEvaluation.code,
@@ -2105,6 +2418,9 @@ function resetRunMemory() {
   progressSyncInFlight = false;
   completionInFlight = false;
   imageDiagnosticsLogged = new Set();
+  filterDiagnosticsByListingId = new Map();
+  diagnosticTimelineByListingId = new Map();
+  usingPersistedSettingsSnapshot = false;
   processingQueue = createProcessingQueue();
   resetPerformanceDiagnostics();
 }
@@ -2442,6 +2758,7 @@ async function restoreActiveRun() {
       state.settingsSnapshot?.activeFilterConfig || state.settingsSnapshot || {}
     )
   };
+  usingPersistedSettingsSnapshot = true;
   sourceSearchRouteKey = state.sourceSearchRouteKey || null;
   scanStartedAt = state.scanStartedAt || null;
   scanCompletedAt = state.scanCompletedAt || null;
@@ -2872,6 +3189,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "GET_SCAN_STATE") {
     sendResponse({ ok: true, result: getRuntimeProgress() });
+    return false;
+  }
+
+  if (message?.type === "GET_SCANNER_DIAGNOSTIC_REPORT") {
+    sendResponse({ ok: true, result: getScannerDiagnosticReport() });
     return false;
   }
 

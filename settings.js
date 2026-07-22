@@ -4,10 +4,10 @@ const elements = Object.fromEntries([
   "connectionStatus", "version", "openDashboard", "returnMarketplace", "closeSettings", "refreshSearches", "savedSearch", "sourceHelp",
   "useLocalDraft", "copyToLocal", "filterSummary", "filterEditor", "makeSearch", "makeOptions", "modelSearch",
   "modelOptions", "modelHelp", "minYear", "maxYear", "minPrice", "maxPrice", "minMileage", "maxMileage",
-  "specificationGroups", "categoryModes", "categoryStatuses", "includeRepairedVehicles", "requiredKeywords",
+  "coreSpecificationGroups", "advancedSpecificationGroups", "categoryModes", "categoryStatuses", "includeRepairedVehicles", "requiredKeywords",
   "excludedKeywords", "unknownPolicies", "targetMatches", "maximumProcessed", "maximumDurationMinutes",
   "autoLoadEnabled", "autoOpenResults", "dashboardUrl", "extensionApiToken", "extensionOrigin", "feedback",
-  "resetChanges", "saveSettings"
+  "advancedFiltersEnabled", "advancedFields", "advancedStatus", "advanced", "includeUnavailableOptional", "resetChanges", "saveSettings"
 ].map(id => [id, document.querySelector(`#${id}`)]));
 
 const UNKNOWN_FIELDS = [
@@ -21,13 +21,13 @@ const POLICY_LABELS = {
   exclude: "Exclude if unknown",
   ignore_filter_for_unknown: "Ignore filter if unknown"
 };
-const SPEC_GROUPS = [
-  ["transmissions", "Transmission"], ["fuelTypes", "Fuel type"], ["colours", "Colour"], ["bodyTypes", "Body type"]
-];
+const CORE_SPEC_GROUPS = [["transmissions", "Transmission"]];
+const ADVANCED_SPEC_GROUPS = [["fuelTypes", "Fuel type"], ["colours", "Colour"], ["bodyTypes", "Body type"]];
+const SPEC_GROUPS = [...CORE_SPEC_GROUPS, ...ADVANCED_SPEC_GROUPS];
 
 let storedSettings = null;
 let savedSearches = [];
-let currentConfig = FilterDomain.normaliseFilterConfig({ excludedCategories: ["S", "N", "C", "D"] });
+let currentConfig = FilterDomain.normaliseFilterConfig({});
 let localDraft = currentConfig;
 let cleanFingerprint = FilterDomain.filterFingerprint(currentConfig);
 
@@ -103,8 +103,8 @@ function renderModels(values = []) {
   filterChoiceGrid(elements.modelOptions, elements.modelSearch.value);
 }
 
-function renderSpecificationGroups(config) {
-  elements.specificationGroups.replaceChildren(...SPEC_GROUPS.map(([key, labelText]) => {
+function renderSpecificationGroups(container, groups, config) {
+  container.replaceChildren(...groups.map(([key, labelText]) => {
     const selection = config.specification[key];
     const details = document.createElement("details");
     details.className = "spec-group";
@@ -190,13 +190,19 @@ function applyConfig(value) {
   renderModels(currentConfig.vehicle.models);
   for (const key of ["minYear", "maxYear"]) elements[key].value = currentConfig.vehicle[key] ?? "";
   for (const key of ["minPrice", "maxPrice", "minMileage", "maxMileage"]) elements[key].value = currentConfig.priceMileage[key] ?? "";
-  renderSpecificationGroups(currentConfig);
+  renderSpecificationGroups(elements.coreSpecificationGroups, CORE_SPEC_GROUPS, currentConfig);
+  renderSpecificationGroups(elements.advancedSpecificationGroups, ADVANCED_SPEC_GROUPS, currentConfig);
   const categoryMode = elements.categoryModes.querySelector(`input[value="${currentConfig.category.mode}"]`);
   if (categoryMode) categoryMode.checked = true;
   for (const input of elements.categoryStatuses.querySelectorAll("input")) input.checked = currentConfig.category.statuses.includes(input.value);
   elements.includeRepairedVehicles.checked = currentConfig.category.includeRepairedVehicles;
   elements.requiredKeywords.value = currentConfig.text.requiredKeywords.join("\n");
   elements.excludedKeywords.value = currentConfig.text.excludedKeywords.join("\n");
+  elements.advancedFiltersEnabled.checked = currentConfig.advancedFiltersEnabled;
+  elements.advancedFields.disabled = !currentConfig.advancedFiltersEnabled;
+  elements.advancedStatus.textContent = currentConfig.advancedFiltersEnabled ? "· Active" : "· Off";
+  elements.advanced.open = currentConfig.advancedFiltersEnabled;
+  elements.includeUnavailableOptional.checked = currentConfig.includeUnavailableOptional;
   for (const select of elements.unknownPolicies.querySelectorAll("select")) select.value = currentConfig.unknownPolicies[select.dataset.unknownField];
   elements.targetMatches.value = currentConfig.scan.targetMatches;
   elements.maximumProcessed.value = currentConfig.scan.maximumProcessed;
@@ -212,7 +218,7 @@ function configFromForm() {
   const specification = {};
   for (const [key] of SPEC_GROUPS) {
     let selection = { mode: "any", include: [], exclude: [] };
-    for (const input of elements.specificationGroups.querySelectorAll(`input[data-specification-key="${key}"]:checked`)) {
+    for (const input of elements.filterEditor.querySelectorAll(`input[data-specification-key="${key}"]:checked`)) {
       selection = FilterDomain.setSelectionState(selection, input.dataset.specificationValue, input.value);
     }
     specification[key] = selection;
@@ -221,6 +227,8 @@ function configFromForm() {
   for (const select of elements.unknownPolicies.querySelectorAll("select")) unknownPolicies[select.dataset.unknownField] = select.value;
   return FilterDomain.normaliseFilterConfig({
     filterSchemaVersion: 2,
+    advancedFiltersEnabled: elements.advancedFiltersEnabled.checked,
+    includeUnavailableOptional: elements.includeUnavailableOptional.checked,
     vehicle: { makes: selectedMakes(), models: selectedModels(), minYear: valueOrNull(elements.minYear), maxYear: valueOrNull(elements.maxYear) },
     priceMileage: { minPrice: valueOrNull(elements.minPrice), maxPrice: valueOrNull(elements.maxPrice), minMileage: valueOrNull(elements.minMileage), maxMileage: valueOrNull(elements.maxMileage) },
     specification,
@@ -242,6 +250,9 @@ function configFromForm() {
 function markDirty() {
   if (elements.filterEditor.disabled) return;
   currentConfig = configFromForm();
+  elements.advancedFields.disabled = !currentConfig.advancedFiltersEnabled;
+  elements.advancedStatus.textContent = currentConfig.advancedFiltersEnabled ? "· Active" : "· Off";
+  if (currentConfig.advancedFiltersEnabled) elements.advanced.open = true;
   renderSummary(currentConfig);
   const dirty = FilterDomain.filterFingerprint(currentConfig) !== cleanFingerprint;
   setFeedback(dirty ? "Unsaved local changes. They do not alter a dashboard saved search." : "No unsaved changes.");
@@ -272,6 +283,8 @@ async function chooseSource(id, copyRemote = false) {
     setEditorReadOnly(true);
     applyConfig(search.filterConfig || search.filters);
     await ScannerSettings.activateDashboardSearch(search);
+    storedSettings.activeSavedSearchId = search.id;
+    storedSettings.activeFilterConfig = currentConfig;
     elements.sourceHelp.textContent = `“${search.name}” is managed in the dashboard and is read-only here.`;
     return;
   }
@@ -280,6 +293,8 @@ async function chooseSource(id, copyRemote = false) {
   setEditorReadOnly(false);
   applyConfig(localDraft);
   localDraft = await ScannerSettings.saveLocalDraft(currentConfig);
+  storedSettings.activeSavedSearchId = null;
+  storedSettings.activeFilterConfig = currentConfig;
   elements.sourceHelp.textContent = copyRemote ? `Copied “${search.name}” into a separate local draft.` : "Local filters apply to the next scan only and never modify dashboard searches.";
 }
 

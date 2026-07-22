@@ -361,8 +361,22 @@ async function fetchWithTimeout(url, runToken) {
   }
 }
 
+function sanitiseInspectionError(error) {
+  const message = String(error instanceof Error ? error.message : error || "")
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/(bearer|token|cookie|password|authorization|session)\s*[:=]?\s*\S+/gi, "$1=[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return {
+    errorClass: String(error?.name || "Error").slice(0, 40),
+    errorMessage: message
+  };
+}
+
 async function inspectListing(url, runToken, debug = false) {
   assertInspectionActive(runToken);
+  const staticStartedAt = Date.now();
   const response = await fetchWithTimeout(url, runToken);
 
   if (!response.ok) {
@@ -376,14 +390,22 @@ async function inspectListing(url, runToken, debug = false) {
     canonicalUrl: response.url || url,
     debug
   });
+  const staticCompletedAt = Date.now();
   let renderedListingDetails = null;
   let listingDetails = staticListingDetails;
+  let renderedStartedAt = null;
+  let renderedCompletedAt = null;
+  let renderedError = null;
   if (listingId) {
     try {
       assertInspectionActive(runToken);
+      renderedStartedAt = Date.now();
       renderedListingDetails = await queueRenderedInspection(response.url || url, listingId, runToken, debug);
+      renderedCompletedAt = Date.now();
       listingDetails = ListingDetailsExtractor.mergeListingDetails(staticListingDetails, renderedListingDetails);
-    } catch {
+    } catch (error) {
+      renderedCompletedAt = Date.now();
+      renderedError = sanitiseInspectionError(error);
       // Static extraction remains a safe fallback when Facebook cannot render in a background tab.
       if (debug) {
         listingDetails = {
@@ -464,6 +486,24 @@ async function inspectListing(url, runToken, debug = false) {
     scopeLength: extractionText.length,
     finalUrl: response.url,
     responseLength: html.length,
+    ...(debug ? {
+      inspectionDiagnostics: {
+        staticAttempted: true,
+        staticCompleted: true,
+        staticDurationMs: staticCompletedAt - staticStartedAt,
+        staticOutcome: "completed",
+        renderedAttempted: renderedStartedAt !== null,
+        renderedCompleted: Boolean(renderedListingDetails),
+        renderedDurationMs: renderedStartedAt === null
+          ? 0
+          : (renderedCompletedAt || Date.now()) - renderedStartedAt,
+        renderedOutcome: renderedListingDetails
+          ? "completed"
+          : renderedStartedAt === null ? "not_applicable" : "failed_static_fallback",
+        renderedErrorClass: renderedError?.errorClass || null,
+        renderedErrorMessage: renderedError?.errorMessage || null
+      }
+    } : {}),
     checkedAt: Date.now()
   };
 }
