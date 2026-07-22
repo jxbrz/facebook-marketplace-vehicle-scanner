@@ -39,6 +39,24 @@ test("shared storage keeps dashboard searches read-only and local drafts separat
   assert.match(settingsJs, /Dashboard saved searches are read-only here/);
 });
 
+test("Core and Advanced settings preserve activation semantics", () => {
+  assert.match(settingsHtml, /Advanced filters/);
+  assert.match(settingsHtml, /advancedFiltersEnabled/);
+  assert.match(settingsHtml, /Include adverts when optional information is unavailable/);
+  assert.match(settingsHtml, /Excluded keywords/);
+  assert.match(settingsJs, /advancedFields\.disabled = !currentConfig\.advancedFiltersEnabled/);
+  assert.match(settingsJs, /advancedFiltersEnabled: elements\.advancedFiltersEnabled\.checked/);
+});
+
+test("source selection updates in-memory state and resumed snapshots are disclosed", () => {
+  assert.match(js, /storedSettings\.activeSavedSearchId = search\.id/);
+  assert.match(js, /storedSettings\.activeSavedSearchId = null/);
+  assert.match(settingsJs, /storedSettings\.activeSavedSearchId = search\.id/);
+  assert.match(settingsJs, /storedSettings\.activeSavedSearchId = null/);
+  assert.match(js, /usingPersistedSettingsSnapshot/);
+  assert.match(js, /original filter snapshot/);
+});
+
 test("popup exposes warnings and aggregate reasons", () => {
   assert.match(js, /Auto-load is off/);
   assert.match(js, /rejectionReasonCounts/);

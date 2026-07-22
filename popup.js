@@ -9,7 +9,7 @@ const elements = Object.fromEntries([
 
 let storedSettings = null;
 let savedSearches = [];
-let currentConfig = FilterDomain.normaliseFilterConfig({ excludedCategories: ["S", "N", "C", "D"] });
+let currentConfig = FilterDomain.normaliseFilterConfig({});
 let latestProgress = null;
 let connectionState = "checking";
 
@@ -35,7 +35,8 @@ function setConnection(state, message) {
 }
 
 function renderSummary(config) {
-  const summary = FilterDomain.filterSummary(config);
+  const summary = FilterDomain.filterSummary(config)
+    .filter(item => item.label !== "Advanced" || config.advancedFiltersEnabled);
   elements.summaryHeadline.textContent = `${summary[0].value} · ${summary.at(-1).value}`;
   elements.filterSummary.replaceChildren(...summary.map(item => {
     const box = document.createElement("div");
@@ -63,9 +64,13 @@ async function chooseSource(id) {
   const search = savedSearches.find(item => item.id === id);
   if (search) {
     currentConfig = await ScannerSettings.activateDashboardSearch(search);
+    storedSettings.activeSavedSearchId = search.id;
+    storedSettings.activeFilterConfig = currentConfig;
     elements.sourceStatus.textContent = `Dashboard search “${search.name}” is active and read-only. Edit it in the dashboard.`;
   } else {
     currentConfig = await ScannerSettings.saveLocalDraft(storedSettings.localFilterDraft || currentConfig);
+    storedSettings.activeSavedSearchId = null;
+    storedSettings.activeFilterConfig = currentConfig;
     elements.sourceStatus.textContent = "Local draft is active. Open full settings to edit it.";
   }
   renderSummary(currentConfig);
@@ -111,6 +116,7 @@ function updateWarnings() {
   if (!elements.savedSearch.value) warnings.push("A local draft is active; dashboard searches remain unchanged.");
   if (latestProgress?.storageHealth?.nearSoftLimit) warnings.push("Local recovery storage is nearing its safe limit.");
   if (latestProgress?.remoteSyncError) warnings.push(`Pending upload failed: ${latestProgress.remoteSyncError}`);
+  if (latestProgress?.usingPersistedSettingsSnapshot) warnings.push("This resumed scan is using its original filter snapshot; newly selected filters apply only to the next scan.");
   elements.warnings.replaceChildren(...warnings.map(message => {
     const paragraph = document.createElement("p");
     paragraph.textContent = message;
@@ -121,6 +127,7 @@ function updateWarnings() {
 
 function updateProgress(progress) {
   latestProgress = progress || null;
+  if (progress?.usingPersistedSettingsSnapshot) elements.sourceStatus.textContent = "Active resumed scan: using its original saved filter snapshot.";
   for (const [id, value] of Object.entries({ discovered: progress?.discovered, queued: progress?.queued, inspecting: progress?.inspecting, matched: progress?.matched, rejected: progress?.rejected, unresolved: progress?.unresolved, pendingUpload: progress?.pendingUploadCount, uploaded: progress?.uploaded })) elements[id].textContent = value ?? 0;
   elements.pauseScan.disabled = !progress?.scanningActive;
   elements.resumeScan.disabled = !progress?.canResume && !progress?.paused;
@@ -177,6 +184,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   if (changes.runtimeProgress) updateProgress(changes.runtimeProgress.newValue);
   if (changes.activeFilterConfig) { currentConfig = FilterDomain.normaliseFilterConfig(changes.activeFilterConfig.newValue); renderSummary(currentConfig); }
+  if (changes.activeSavedSearchId && storedSettings) storedSettings.activeSavedSearchId = changes.activeSavedSearchId.newValue || null;
   if (changes.localFilterDraft && storedSettings) storedSettings.localFilterDraft = FilterDomain.normaliseFilterConfig(changes.localFilterDraft.newValue);
   if (changes.extensionApiToken && storedSettings) storedSettings.extensionApiToken = changes.extensionApiToken.newValue || "";
   if (changes.dashboardUrl && storedSettings) storedSettings.dashboardUrl = changes.dashboardUrl.newValue || ScannerSettings.CANONICAL_DASHBOARD_ORIGIN;

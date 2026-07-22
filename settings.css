@@ -33,6 +33,11 @@ h2 { font-size:19px; }
 .sidebar p { margin:12px 10px 6px; color:var(--muted); font-size:11px; line-height:1.45; }
 .content,.editor-shell { display:grid; gap:18px; }
 .panel { scroll-margin-top:100px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--surface); }
+.panel > summary { cursor:pointer; list-style-position:outside; }
+.advanced-content { display:grid; gap:16px; margin-top:16px; }
+.advanced-warning { padding:12px; border:1px solid #8a5a32; border-radius:8px; color:#ffd8ac; background:#2a1b10; font-size:12px; line-height:1.5; }
+#advancedFields[disabled] { opacity:.55; }
+#advancedStatus { color:var(--muted); font-size:12px; font-weight:500; }
 .section-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
 .two-column,.three-column,.four-column,.spec-grid,.summary-grid { display:grid; gap:14px; }
 .two-column { grid-template-columns:repeat(2,minmax(0,1fr)); }

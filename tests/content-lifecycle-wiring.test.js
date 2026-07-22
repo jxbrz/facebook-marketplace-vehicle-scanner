@@ -136,9 +136,48 @@ test("auto-scroll never waits for detail work to drain", () => {
 test("cheap filters and cached results run before bounded detail queueing", () => {
   const scan = functionSource("scanPage", "function scheduleScan");
   assert.ok(scan.indexOf("cachedResult") < scan.indexOf("localEvaluation"));
-  assert.ok(scan.indexOf("localEvaluation.rejected") < scan.indexOf("ensureProcessingQueue().enqueue"));
+  assert.ok(scan.indexOf("localEvaluation.decision") < scan.indexOf("ensureProcessingQueue().enqueue"));
+  assert.match(scan, /localEvaluation\.provenReject === true/);
+  assert.match(scan, /localEvaluation\.detailRequired === false/);
   assert.doesNotMatch(scan, /processListing\(entry/);
   assert.match(source, /listingProcessingConcurrency: 3/);
+});
+
+test("filter diagnostics are opt-in, bounded and contain no listing content", () => {
+  const diagnostics = functionSource("recordFilterDiagnostic", "function recordLifecycleDiagnostic");
+  assert.match(diagnostics, /scannerDebugDiagnostics/);
+  assert.match(diagnostics, /size >= 40/);
+  assert.match(diagnostics, /shortPathHash/);
+  assert.match(diagnostics, /filterFingerprintHash/);
+  assert.doesNotMatch(diagnostics, /fullDescription|listingUrl|imageUrl|sellerName|extensionApiToken/);
+  const process = functionSource("processListing", "async function scanPage");
+  assert.match(process, /detailExtractionAttempted: true/);
+  assert.match(process, /detailExtractionOutcome: "completed"/);
+});
+
+test("sanitized diagnostic lifecycle is bounded and exposes no listing content", () => {
+  const recorder = functionSource("recordDiagnosticStage", "function getScannerDiagnosticReport");
+  assert.match(recorder, /size >= 8/);
+  assert.match(recorder, /stages\.length >= 24/);
+  assert.match(recorder, /shortPathHash/);
+  const report = functionSource("getScannerDiagnosticReport", "function recordLifecycleDiagnostic");
+  assert.match(report, /uploadEnabled: true/);
+  assert.match(report, /readyToCopy/);
+  assert.match(report, /elapsedMs/);
+  assert.doesNotMatch(report, /description|title|listingUrl|imageUrl|seller|token|cookie|credential/i);
+  for (const stage of [
+    "discovered", "card_metadata_extracted", "card_facts_normalized", "prefilter_evaluated",
+    "queued_for_detail", "static_extraction_started", "static_extraction_completed",
+    "rendered_extraction_completed", "facts_merged", "final_evaluation", "unrestricted_core_evaluation", "payload_built", "terminal"
+  ]) assert.match(source, new RegExp(stage));
+});
+
+test("runtime state identifies persisted filter snapshots", () => {
+  const progress = functionSource("getRuntimeProgress", "function updateProgress");
+  assert.match(progress, /usingPersistedSettingsSnapshot/);
+  assert.match(progress, /activeFilterSource/);
+  const restore = functionSource("restoreActiveRun", "async function clearLocalScannerState");
+  assert.match(restore, /usingPersistedSettingsSnapshot = true/);
 });
 
 test("progressive uploads are ID-deduplicated, bounded, and independent of discovery", () => {

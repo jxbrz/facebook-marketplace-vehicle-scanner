@@ -5,6 +5,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function createScannerSettings(FilterDomain) {
   "use strict";
 
+  const FILTER_COMPATIBILITY_VERSION = 1;
   const CANONICAL_DASHBOARD_ORIGIN = "https://sourcing.kelmarvehiclesltd.co.uk";
   const LEGACY_DASHBOARD_ORIGIN = "https://facebook-web-filter.vercel.app";
   const DEFAULTS = {
@@ -13,8 +14,22 @@
     activeSavedSearchId: null,
     activeFilterConfig: null,
     localFilterDraft: null,
-    runtimeProgress: null
+    runtimeProgress: null,
+    filterCompatibilityVersion: 0
   };
+
+  function migrateLegacyLocalCategoryConfig(value) {
+    const config = FilterDomain.normaliseFilterConfig(value);
+    if (config.category.mode !== "clean_only") return config;
+    return FilterDomain.normaliseFilterConfig({
+      ...config,
+      category: {
+        ...config.category,
+        mode: "selected",
+        statuses: ["clean", "other", "unknown"]
+      }
+    });
+  }
 
   function normaliseDashboardUrl(value) {
     const trimmed = String(value || "").trim().replace(/\/+$/, "");
@@ -53,12 +68,31 @@
   async function load() {
     const stored = await chrome.storage.local.get(DEFAULTS);
     const dashboardUrl = normaliseDashboardUrl(stored.dashboardUrl) || CANONICAL_DASHBOARD_ORIGIN;
-    const activeFilterConfig = FilterDomain.normaliseFilterConfig(stored.activeFilterConfig || stored);
-    const localFilterDraft = FilterDomain.normaliseFilterConfig(stored.localFilterDraft || (stored.activeSavedSearchId ? {} : activeFilterConfig));
-    if (dashboardUrl !== stored.dashboardUrl || !stored.localFilterDraft && !stored.activeSavedSearchId) {
-      await chrome.storage.local.set({ dashboardUrl, localFilterDraft });
+    let activeFilterConfig = FilterDomain.normaliseFilterConfig(stored.activeFilterConfig || stored);
+    let localFilterDraft = FilterDomain.normaliseFilterConfig(stored.localFilterDraft || (stored.activeSavedSearchId ? {} : activeFilterConfig));
+    const patch = {};
+    if (Number(stored.filterCompatibilityVersion) < FILTER_COMPATIBILITY_VERSION) {
+      localFilterDraft = migrateLegacyLocalCategoryConfig(localFilterDraft);
+      patch.localFilterDraft = localFilterDraft;
+      if (!stored.activeSavedSearchId) {
+        activeFilterConfig = migrateLegacyLocalCategoryConfig(activeFilterConfig);
+        Object.assign(patch, compatibilityShape(activeFilterConfig, null));
+      }
+      patch.filterCompatibilityVersion = FILTER_COMPATIBILITY_VERSION;
     }
-    return { ...stored, dashboardUrl, activeFilterConfig, localFilterDraft };
+    if (dashboardUrl !== stored.dashboardUrl || !stored.localFilterDraft && !stored.activeSavedSearchId) {
+      patch.dashboardUrl = dashboardUrl;
+      patch.localFilterDraft = localFilterDraft;
+    }
+    if (Object.keys(patch).length) await chrome.storage.local.set(patch);
+    return {
+      ...stored,
+      ...patch,
+      dashboardUrl,
+      activeFilterConfig,
+      localFilterDraft,
+      filterCompatibilityVersion: FILTER_COMPATIBILITY_VERSION
+    };
   }
 
   async function saveConnection(dashboardUrl, extensionApiToken) {
@@ -105,10 +139,12 @@
   return {
     CANONICAL_DASHBOARD_ORIGIN,
     DEFAULTS,
+    FILTER_COMPATIBILITY_VERSION,
     activateDashboardSearch,
     fetchSavedSearches,
     load,
     normaliseDashboardUrl,
+    migrateLegacyLocalCategoryConfig,
     saveConnection,
     saveLocalDraft,
     sendBackground

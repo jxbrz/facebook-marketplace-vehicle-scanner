@@ -98,13 +98,37 @@
     const models = rawModels.filter(model => VehicleCatalogue.isModelCompatible(model, makes));
     const legacyCategories = list(source.excludedCategories || source.excludeCategories, item => String(item || "").toUpperCase());
     const suppliedMode = category.mode;
+    const suppliedModeIsValid = CATEGORY_MODES.includes(suppliedMode);
     const categoryMode = CATEGORY_MODES.includes(suppliedMode)
       ? suppliedMode
-      : legacyCategories.length ? "clean_only" : "any";
+      : legacyCategories.some(item => ["S", "N", "C", "D"].includes(item)) ? "selected" : "any";
     const statuses = list(category.statuses).filter(item => CATEGORY_STATUSES.includes(item));
+    const legacyExcludedStatuses = new Set(
+      legacyCategories
+        .filter(item => ["S", "N", "C", "D"].includes(item))
+        .map(item => `cat_${item.toLowerCase()}`)
+    );
+    const categoryStatuses = suppliedModeIsValid
+      ? statuses
+      : CATEGORY_STATUSES.filter(status => !legacyExcludedStatuses.has(status));
+    const transmissions = selection(specification.transmissions ?? source.transmissions, SPECIFICATION_OPTIONS.transmissions);
+    const fuelTypes = selection(specification.fuelTypes ?? source.fuelTypes, SPECIFICATION_OPTIONS.fuelTypes);
+    const colours = selection(specification.colours ?? source.colours, SPECIFICATION_OPTIONS.colours);
+    const bodyTypes = selection(specification.bodyTypes ?? source.bodyTypes, SPECIFICATION_OPTIONS.bodyTypes);
+    const requiredKeywords = list(textFilter.requiredKeywords ?? source.requiredKeywords, item => String(item || "").trim().toLowerCase());
+    const hasAdvancedRestrictions = [fuelTypes, colours, bodyTypes]
+      .some(item => item.include.length > 0 || item.exclude.length > 0) ||
+      requiredKeywords.length > 0 ||
+      ["fuelType", "colour", "bodyType"].some(field =>
+        unknown[field] !== undefined && policy(unknown[field], DEFAULT_UNKNOWN_POLICIES[field]) !== DEFAULT_UNKNOWN_POLICIES[field]
+      );
     return {
       filterSchemaVersion: FILTER_SCHEMA_VERSION,
       catalogueVersion: VehicleCatalogue.CATALOGUE_VERSION,
+      advancedFiltersEnabled: typeof source.advancedFiltersEnabled === "boolean"
+        ? source.advancedFiltersEnabled
+        : hasAdvancedRestrictions,
+      includeUnavailableOptional: source.includeUnavailableOptional !== false,
       vehicle: {
         makes,
         models,
@@ -118,18 +142,18 @@
         maxMileage: integer(priceMileage.maxMileage ?? source.maxMileage, 0, 1_000_000)
       },
       specification: {
-        transmissions: selection(specification.transmissions ?? source.transmissions, SPECIFICATION_OPTIONS.transmissions),
-        fuelTypes: selection(specification.fuelTypes ?? source.fuelTypes, SPECIFICATION_OPTIONS.fuelTypes),
-        colours: selection(specification.colours ?? source.colours, SPECIFICATION_OPTIONS.colours),
-        bodyTypes: selection(specification.bodyTypes ?? source.bodyTypes, SPECIFICATION_OPTIONS.bodyTypes)
+        transmissions,
+        fuelTypes,
+        colours,
+        bodyTypes
       },
       category: {
         mode: categoryMode,
-        statuses: categoryMode === "selected" ? statuses : [],
+        statuses: categoryMode === "selected" ? categoryStatuses : [],
         includeRepairedVehicles: Boolean(category.includeRepairedVehicles)
       },
       text: {
-        requiredKeywords: list(textFilter.requiredKeywords ?? source.requiredKeywords, item => String(item || "").trim().toLowerCase()),
+        requiredKeywords,
         excludedKeywords: list(textFilter.excludedKeywords ?? source.excludedKeywords, item => String(item || "").trim().toLowerCase())
       },
       unknownPolicies: {
@@ -187,6 +211,13 @@
     const missingRequiredFields = [];
     const evaluatedValues = {};
 
+    function identityEvidenceReliable(field) {
+      if (phase === "final") return true;
+      const source = String(facts.sources?.[field] || "");
+      const confidence = String(facts.confidence?.[field] || "unknown");
+      return confidence === "high" && /structured_fields|vehicle_attributes|search_card_reliable/.test(source);
+    }
+
     function unknown(field, policyName, active) {
       if (!active) return;
       const label = LABELS[field];
@@ -195,7 +226,9 @@
         unresolvedReasons.push(`${label} unavailable on the card; detail inspection required`);
         return;
       }
-      const selectedPolicy = config.unknownPolicies[policyName];
+      const selectedPolicy = !config.advancedFiltersEnabled && ["transmission", "fuelType", "colour", "bodyType"].includes(policyName)
+        ? config.includeUnavailableOptional ? "include_with_warning" : "exclude"
+        : config.unknownPolicies[policyName];
       if (selectedPolicy === "include_with_warning") warnings.push(`${label} unavailable after detail inspection`);
       if (selectedPolicy === "ignore_filter_for_unknown") warnings.push(`${label} unavailable; filter ignored by saved-search policy`);
       if (selectedPolicy === "inspect_then_reject" || selectedPolicy === "exclude") {
@@ -225,11 +258,13 @@
       VehicleCatalogue.key(make) === VehicleCatalogue.key(facts.make) ||
       VehicleCatalogue.key(make) === VehicleCatalogue.key(VehicleCatalogue.OTHER_MAKE) && !VehicleCatalogue.isKnownMake(facts.make)
     )) {
-      rejectionReasons.push(`Make ${facts.make} is not selected`);
+      if (identityEvidenceReliable("make")) rejectionReasons.push(`Make ${facts.make} is not selected`);
+      else unresolvedReasons.push(`Make evidence is uncertain on the card; detail inspection required`);
     }
     if (!facts.model) unknown("model", "makeModel", modelsActive);
     else if (modelsActive && !config.vehicle.models.some(model => VehicleCatalogue.key(model) === VehicleCatalogue.key(facts.model))) {
-      rejectionReasons.push(`Model ${facts.model} is not selected`);
+      if (identityEvidenceReliable("model")) rejectionReasons.push(`Model ${facts.model} is not selected`);
+      else unresolvedReasons.push(`Model evidence is uncertain on the card; detail inspection required`);
     }
 
     function selected(field, policyName, selectionConfig) {
@@ -237,6 +272,7 @@
       const active = selectionConfig.include.length > 0 || selectionConfig.exclude.length > 0;
       evaluatedValues[field] = value;
       if (value === "unknown" || value === null || value === undefined) {
+        if (phase === "prefilter") return unknown(field, policyName, active);
         if (selectionConfig.exclude.includes("unknown")) return void rejectionReasons.push(`${LABELS[field]} is unknown and excluded`);
         if (selectionConfig.include.includes("unknown")) return;
         return unknown(field, policyName, active);
@@ -245,29 +281,39 @@
       if (selectionConfig.exclude.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is excluded`);
     }
     selected("transmission", "transmission", config.specification.transmissions);
-    selected("fuelType", "fuelType", config.specification.fuelTypes);
-    selected("colour", "colour", config.specification.colours);
-    selected("bodyType", "bodyType", config.specification.bodyTypes);
+    if (config.advancedFiltersEnabled) {
+      selected("fuelType", "fuelType", config.specification.fuelTypes);
+      selected("colour", "colour", config.specification.colours);
+      selected("bodyType", "bodyType", config.specification.bodyTypes);
+    }
 
     const category = facts.categoryStatus || "unknown";
     evaluatedValues.categoryStatus = category;
     evaluatedValues.repairedVehicle = Boolean(facts.repairedVehicle);
     const categoryActive = config.category.mode !== "any";
-    if (category === "unknown") unknown("categoryStatus", "categoryStatus", categoryActive && !(config.category.mode === "selected" && config.category.statuses.includes("unknown")));
+    if (category === "unknown") unknown("categoryStatus", "categoryStatus", categoryActive && (phase === "prefilter" || !(config.category.mode === "selected" && config.category.statuses.includes("unknown"))));
     if (config.category.mode === "clean_only" && category !== "clean" && category !== "unknown") rejectionReasons.push(`Category status ${category.replace("cat_", "Cat ").toUpperCase()} is not clean`);
-    if (config.category.mode === "category_only" && !["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)) rejectionReasons.push(`Category status ${category} is not a confirmed category vehicle`);
+    if (config.category.mode === "category_only" && category !== "unknown" && !["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)) rejectionReasons.push(`Category status ${category} is not a confirmed category vehicle`);
     if (config.category.mode === "selected" && category !== "unknown" && !config.category.statuses.includes(category)) rejectionReasons.push(`Category status ${category.replace("cat_", "Cat ")} is not selected`);
     if (facts.repairedVehicle && !config.category.includeRepairedVehicles) rejectionReasons.push("Advert is described as repaired, but repaired vehicles are not included");
 
     const corpus = String(facts.textCorpus || "").toLowerCase();
-    for (const keyword of config.text.requiredKeywords) if (!corpus.includes(keyword)) rejectionReasons.push(`Required keyword “${keyword}” was not found`);
+    if (config.advancedFiltersEnabled) for (const keyword of config.text.requiredKeywords) {
+      if (corpus.includes(keyword)) continue;
+      if (phase === "prefilter") unresolvedReasons.push(`Required keyword “${keyword}” not confirmed on the card; detail inspection required`);
+      else rejectionReasons.push(`Required keyword “${keyword}” was not found`);
+    }
     for (const keyword of config.text.excludedKeywords) if (corpus.includes(keyword)) rejectionReasons.push(`Excluded keyword “${keyword}” found`);
 
     const unique = values => [...new Set(values)];
     const rejected = unique(rejectionReasons);
     const unresolved = unique(unresolvedReasons);
+    const decision = rejected.length ? "reject" : unresolved.length ? "unresolved" : "match";
     return {
-      decision: rejected.length ? "reject" : unresolved.length ? "unresolved" : "match",
+      decision,
+      detailRequired: decision === "unresolved",
+      provenReject: decision === "reject",
+      evidenceQuality: decision === "reject" ? "proven" : unresolved.length ? "incomplete" : "complete",
       rejectionReasons: rejected,
       unresolvedReasons: unresolved,
       warnings: unique(warnings),
@@ -305,6 +351,7 @@
       { label: "Colour", value: selectionSummary(config.specification.colours) },
       { label: "Body", value: selectionSummary(config.specification.bodyTypes) },
       { label: "Category", value: category },
+      { label: "Advanced", value: config.advancedFiltersEnabled ? "Active" : "Off" },
       { label: "Scan", value: `${config.scan.targetMatches} matches · ${config.scan.maximumProcessed} max · ${Math.round(config.scan.maximumDurationSeconds / 60)} min` }
     ];
   }

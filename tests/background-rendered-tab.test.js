@@ -59,6 +59,21 @@ test("rendered inspection uses low bounded concurrency instead of a global promi
   assert.doesNotMatch(source, /renderedInspectionChain/);
 });
 
+test("debug inspection reports static and rendered outcomes without raw URLs or credentials", () => {
+  const source = fs.readFileSync("background.js", "utf8");
+  const start = source.indexOf("async function inspectListing(");
+  const end = source.indexOf("function schedulePump", start);
+  const inspection = source.slice(start, end);
+  for (const field of [
+    "inspectionDiagnostics", "staticAttempted", "staticCompleted", "staticDurationMs",
+    "renderedAttempted", "renderedCompleted", "renderedDurationMs", "renderedOutcome",
+    "renderedErrorClass", "renderedErrorMessage"
+  ]) assert.match(inspection, new RegExp(field));
+  assert.match(source, /function sanitiseInspectionError/);
+  assert.match(source, /\[url\]/);
+  assert.match(source, /\[redacted\]/);
+});
+
 test("migrates the legacy dashboard origin and sends authenticated requests directly to production", async () => {
   const requests = [];
   const harness = createHarness(
