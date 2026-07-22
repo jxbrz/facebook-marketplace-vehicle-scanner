@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.2.0";
+const EXTENSION_VERSION = "23.2.1";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -19,7 +19,8 @@ const CONFIG = {
   autoLoadMaxStalls: 10,
   autoLoadEndConfirmations: 4,
   growthTimeoutMs: 3500,
-  activeRunStorageKey: "scannerV19:activeRun"
+  activeRunStorageKey: "scannerV19:activeRun",
+  panelMinimisedStorageKey: "scannerPanelMinimised"
 };
 
 const DEFAULT_SETTINGS = {
@@ -41,7 +42,8 @@ const DEFAULT_SETTINGS = {
   acceptedModels: [],
   activeSavedSearchId: null,
   activeFilterConfig: null,
-  scannerDebugDiagnostics: false
+  scannerDebugDiagnostics: false,
+  scannerPanelMinimised: false
 };
 
 const FINAL_LISTING_STATUSES = new Set([
@@ -2584,9 +2586,29 @@ async function loadSettings() {
     acceptedMakes: activeFilterConfig.vehicle.makes,
     acceptedModels: activeFilterConfig.vehicle.models,
     activeSavedSearchId: stored.activeSavedSearchId || null,
-    activeFilterConfig
+    activeFilterConfig,
+    scannerPanelMinimised: stored.scannerPanelMinimised === true
   };
   resetPerformanceDiagnostics();
+}
+
+function applyPanelMinimisedPreference(panel, minimised) {
+  const isMinimised = minimised === true;
+  panel.root.classList.toggle("mcf-panel-minimised", isMinimised);
+  panel.expanded.setAttribute("aria-hidden", String(isMinimised));
+  panel.restoreButton.hidden = !isMinimised;
+}
+
+function setPanelMinimised(minimised) {
+  const isMinimised = minimised === true;
+  settings.scannerPanelMinimised = isMinimised;
+  if (panelElements) {
+    applyPanelMinimisedPreference(panelElements, isMinimised);
+    (isMinimised ? panelElements.restoreButton : panelElements.minimiseButton).focus({ preventScroll: true });
+  }
+  chrome.storage.local.set({ [CONFIG.panelMinimisedStorageKey]: isMinimised }).catch(error => {
+    console.warn("Marketplace Vehicle Scanner panel preference could not be saved:", error);
+  });
 }
 
 function ensurePanel() {
@@ -2606,7 +2628,15 @@ function ensurePanel() {
     const status = document.createElement("span");
     status.className = "mcf-panel-status";
 
-    header.append(title, status);
+    const minimiseButton = document.createElement("button");
+    minimiseButton.type = "button";
+    minimiseButton.className = "mcf-panel-minimise";
+    minimiseButton.textContent = "−";
+    minimiseButton.setAttribute("aria-label", "Minimise scanner panel");
+    minimiseButton.title = "Minimise scanner panel";
+    minimiseButton.addEventListener("click", () => setPanelMinimised(true));
+
+    header.append(title, status, minimiseButton);
 
     const counters = document.createElement("div");
     counters.className = "mcf-panel-counters";
@@ -2679,11 +2709,31 @@ function ensurePanel() {
     });
 
     actions.append(stopButton, resultsButton, retryButton);
-    root.append(header, counters, limitText, progressTrack, syncText, storageText, actions);
+
+    const expanded = document.createElement("div");
+    expanded.className = "mcf-panel-expanded";
+    expanded.append(header, counters, limitText, progressTrack, syncText, storageText, actions);
+
+    const restoreButton = document.createElement("button");
+    restoreButton.type = "button";
+    restoreButton.className = "mcf-panel-restore";
+    restoreButton.setAttribute("aria-label", "Restore scanner panel");
+    restoreButton.title = "Restore scanner panel";
+    const compactMark = document.createElement("span");
+    compactMark.className = "mcf-panel-compact-mark";
+    compactMark.setAttribute("aria-hidden", "true");
+    compactMark.textContent = "K";
+    const compactText = document.createElement("span");
+    compactText.className = "mcf-panel-compact-text";
+    restoreButton.append(compactMark, compactText);
+    restoreButton.addEventListener("click", () => setPanelMinimised(false));
+
+    root.append(expanded, restoreButton);
     document.documentElement.appendChild(root);
 
     panelElements = {
       root,
+      expanded,
       status,
       counters: Object.fromEntries(
         [...root.querySelectorAll("[data-key]")]
@@ -2695,8 +2745,12 @@ function ensurePanel() {
       storageText,
       stopButton,
       resultsButton,
-      retryButton
+      retryButton,
+      minimiseButton,
+      restoreButton,
+      compactText
     };
+    applyPanelMinimisedPreference(panelElements, settings.scannerPanelMinimised);
   }
 
   return panelElements;
@@ -2731,6 +2785,18 @@ function renderPanel(progress) {
   };
 
   panel.status.textContent = statusLabels[progress.scanStatus] || progress.scanStatus;
+  const compactState = progress.remoteSyncError || progress.scanStatus === "failed"
+    ? "Error"
+    : progress.paused
+      ? "Paused"
+      : progress.scanningActive || ["creating", "running"].includes(progress.scanStatus)
+        ? "Scanning"
+        : progress.interrupted
+          ? "Interrupted"
+          : progress.scanStatus === "completed"
+            ? "Complete"
+            : "Idle";
+  panel.compactText.textContent = `Kelmar · ${compactState}${progress.matched ? ` · ${progress.matched} match${progress.matched === 1 ? "" : "es"}` : ""}`;
   panel.limitText.textContent =
     `${progress.matched}/${progress.targetMatches} matches · ` +
     `${progress.processed}/${progress.maximumProcessed} processed · ` +
