@@ -1,6 +1,6 @@
 {
   "name": "facebook-marketplace-vehicle-scanner",
-  "version": "23.2.0",
+  "version": "23.2.1",
   "private": true,
   "scripts": {
     "check": "node --check background.js && node --check content.js && node --check popup.js && node --check settings.js && node --check settings-storage.js && node --check category-detector.js && node --check listing-category-pipeline.js && node --check mileage-utils.js && node --check scanner-lifecycle.js && node --check scanner-diagnostics.js && node --check scanner-runtime.js && node --check scanner-storage.js && node --check vehicle-catalogue.js && node --check listing-facts.js && node --check filter-domain.js && node --check vehicle-identity.js && node --check listing-details-extractor.js && node --check payload-normalizer.js",

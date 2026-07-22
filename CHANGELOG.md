@@ -1,5 +1,10 @@
 # Changelog
 
+## 23.2.1 - 2026-07-22
+
+- Added a persistent minimise/restore control to the on-page scanner overlay without interrupting scanner lifecycle, uploads, queues, or filter state.
+- Kept live scanner state and match counts visible in a compact Kelmar-branded pill.
+
 ## 23.2.0 - 2026-07-21
 
 - Added a responsive full-tab settings workspace and reduced the popup to saved-search selection, filter summary, scan progress, warnings, and lifecycle controls.
