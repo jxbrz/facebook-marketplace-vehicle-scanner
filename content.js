@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.2.2";
+const EXTENSION_VERSION = "23.2.3";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -20,6 +20,7 @@ const CONFIG = {
   autoLoadEndConfirmations: 4,
   growthTimeoutMs: 3500,
   activeRunStorageKey: "scannerV19:activeRun",
+  evaluatorLifecycleVersionKey: "scannerEvaluatorLifecycleVersion",
   panelMinimisedStorageKey: "scannerPanelMinimised"
 };
 
@@ -187,6 +188,7 @@ function diagnosticReasonCodesForEvaluation(evaluation = {}) {
     return `${match?.[1] || "filter"}_${suffix}`;
   });
   return [...new Set([
+    ...(evaluation.rejectionReasonCodes || []),
     ...mapReasons(evaluation.rejectionReasons || [], "rejected"),
     ...mapReasons(evaluation.unresolvedReasons || [], "detail_required")
   ])].slice(0, 12);
@@ -266,7 +268,8 @@ function safeDiagnosticDetails(details = {}) {
     "cardUrlResolved", "detailRequired", "provenReject", "staticAttempted",
     "staticCompleted", "renderedAttempted", "renderedCompleted", "payloadBuilt",
     "payloadValid", "uploadAttempted", "uploadCompleted",
-    "hasDescription", "hasMileage", "hasPrice", "hasYear", "hasIdentity", "hasImages"
+    "hasDescription", "hasMileage", "hasPrice", "hasYear", "hasIdentity", "hasImages",
+    "detailInspectionAttempted", "staticInspectionCompleted", "renderedInspectionCompleted"
   ];
   const allowedNumberFields = ["durationMs", "imageCount"];
   const safe = {};
@@ -276,12 +279,12 @@ function safeDiagnosticDetails(details = {}) {
   for (const field of allowedNumberFields) {
     if (Number.isFinite(details[field])) safe[field] = Math.max(0, Math.round(details[field]));
   }
-  for (const field of ["decision", "outcome", "errorClass", "errorMessage"]) {
+  for (const field of ["decision", "outcome", "errorClass", "errorMessage", "finalizationStage"]) {
     if (details[field] !== null && details[field] !== undefined) {
       safe[field] = sanitiseDiagnosticText(details[field], field === "errorMessage" ? 120 : 50);
     }
   }
-  for (const field of ["knownFields", "reasonCodes"]) {
+  for (const field of ["knownFields", "reasonCodes", "finalizationReasonCodes"]) {
     if (Array.isArray(details[field])) {
       safe[field] = details[field].slice(0, 12).map(value => sanitiseDiagnosticText(value, 50));
     }
@@ -317,7 +320,7 @@ function getScannerDiagnosticReport() {
     reportVersion: 1,
     mode: "normal_debug",
     uploadEnabled: true,
-    maximumListings: null,
+    maximumListings: settings.maximumProcessed,
     startedAt: scanStartedAt ? new Date(scanStartedAt).toISOString() : null,
     completedAt: scanCompletedAt ? new Date(scanCompletedAt).toISOString() : null,
     elapsedMs: scanStartedAt
@@ -639,8 +642,10 @@ function vehicleAttribute(result, labels) {
   return null;
 }
 
-function buildCanonicalFacts(metadata = {}, result = null) {
-  const detailAvailable = Boolean(result);
+function buildCanonicalFacts(metadata = {}, result = null, options = {}) {
+  const detailAvailable = options.detailCompleted === undefined
+    ? Boolean(result)
+    : options.detailCompleted === true;
   const category = result?.detected && ["S", "N", "C", "D"].includes(result.category)
     ? `cat_${result.category.toLowerCase()}`
     : null;
@@ -675,17 +680,21 @@ function buildCanonicalFacts(metadata = {}, result = null) {
       fuelType: result?.fuelType ? "listing_detail" : "search_card",
       colour: detailAvailable ? "listing_detail" : "unknown",
       bodyType: detailAvailable ? "listing_detail" : "unknown",
-      categoryStatus: detailAvailable ? "trusted_listing_evidence" : "search_card"
+      categoryStatus: detailAvailable ? "trusted_listing_evidence" : "search_card",
+      textCorpus: detailAvailable ? "listing_detail" : "search_card"
     }
   });
 }
 
 function evaluateFilters(metadata, result = null, options = {}) {
-  const facts = buildCanonicalFacts(metadata, result);
+  const phase = options.phase || (result ? "final" : "prefilter");
+  const facts = buildCanonicalFacts(metadata, result, {
+    detailCompleted: phase !== "prefilter" && Boolean(result)
+  });
   const evaluation = FilterDomain.evaluateFilters(
     facts,
     settings.activeFilterConfig || settings,
-    { phase: options.phase || (result ? "final" : "prefilter") }
+    { phase }
   );
   const primaryReason = evaluation.rejectionReasons[0] || evaluation.unresolvedReasons[0] || null;
   return {
@@ -762,6 +771,15 @@ function markDiscovered(listing, metadata) {
 }
 
 function markFinal(listingId, status, options = {}) {
+  const finalizationStage = options.finalizationStage || "detail";
+  const evaluation = options.result?.filterEvaluation || null;
+  const cardDecision = finalizationStage === "card"
+    ? ScannerDecisionPolicy.cardFinalizationDecision(evaluation)
+    : null;
+  if (finalizationStage === "card" && !cardDecision.mayFinalize) {
+    throw new Error("Unsafe card-stage finalization was blocked pending detail inspection.");
+  }
+  const current = getLedgerEntry(listingId);
   const entry = upsertLedgerEntry(listingId, {
     status,
     workState: options.workState || (status === "unavailable" ? "failed_final" : "processed"),
@@ -769,6 +787,12 @@ function markFinal(listingId, status, options = {}) {
     code: options.code || (status === "unavailable" ? "unavailable" : null),
     source: options.source || "listing-result",
     metadata: options.metadata,
+    detailInspectionAttempted: options.detailInspectionAttempted ?? current?.detailInspectionAttempted ?? false,
+    staticInspectionCompleted: options.staticInspectionCompleted ?? current?.staticInspectionCompleted ?? false,
+    renderedInspectionCompleted: options.renderedInspectionCompleted ?? current?.renderedInspectionCompleted ?? false,
+    finalizationStage,
+    finalizationReasonCodes: cardDecision?.reasonCodes || options.finalizationReasonCodes || diagnosticReasonCodesForEvaluation(evaluation || {}),
+    cardFinalizationValidated: finalizationStage === "card" ? true : null,
     processedAt: Date.now()
   });
 
@@ -782,7 +806,12 @@ function markFinal(listingId, status, options = {}) {
   recordDiagnosticStage(listingId, "terminal", {
     decision: status,
     outcome: options.code || status,
-    reasonCodes: options.code ? [options.code] : []
+    reasonCodes: options.code ? [options.code] : [],
+    detailInspectionAttempted: entry.detailInspectionAttempted === true,
+    staticInspectionCompleted: entry.staticInspectionCompleted === true,
+    renderedInspectionCompleted: entry.renderedInspectionCompleted === true,
+    finalizationStage: entry.finalizationStage,
+    finalizationReasonCodes: entry.finalizationReasonCodes
   });
   return entry;
 }
@@ -843,6 +872,8 @@ function classifyListing(listingId, metadata, result, source) {
     reason: evaluation.reason,
     code: evaluation.code,
     source,
+    finalizationStage: source === "cached-listing-result" ? "cached_detail" : "detail",
+    finalizationReasonCodes: diagnosticReasonCodesForEvaluation(evaluation),
     metadata,
     result: classifiedResult
   });
@@ -1286,7 +1317,17 @@ function buildRemoteListing(entry, result = null) {
       provisionalStatus: result?.categoryClassificationDiagnostics?.provisionalStatus || null,
       finalStatus: result?.categoryClassificationDiagnostics?.finalStatus || entry.status,
       extractionSource: result?.extractionSource || null,
-      checkedAt: result?.checkedAt || entry.processedAt || null
+      checkedAt: result?.checkedAt || entry.processedAt || null,
+      runtimeLifecycle: {
+        evaluatorLifecycleVersion: ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION,
+        detailInspectionAttempted: entry.detailInspectionAttempted === true,
+        staticInspectionCompleted: entry.staticInspectionCompleted === true,
+        renderedInspectionCompleted: entry.renderedInspectionCompleted === true,
+        finalizationStage: entry.finalizationStage || "detail_unavailable",
+        finalizationReasonCodes: Array.isArray(entry.finalizationReasonCodes)
+          ? entry.finalizationReasonCodes.slice(0, 12)
+          : []
+      }
     },
     discoveredAt: entry.discoveredAt
       ? new Date(entry.discoveredAt).toISOString()
@@ -1299,6 +1340,9 @@ function buildRemoteListing(entry, result = null) {
 
 function queueRemoteListing(entry, result = null) {
   if (!remoteRun?.scanId || !isFinalStatus(entry.status)) return;
+  if (entry.finalizationStage === "card" && entry.cardFinalizationValidated !== true) {
+    throw new Error("Unsafe card-stage upload was blocked pending detail inspection.");
+  }
 
   const payload = ScannerStorage.sanitisePendingUpload(buildRemoteListing(entry, result));
   pendingUploadsByListingId.set(entry.listingId, payload);
@@ -1587,7 +1631,8 @@ function createProcessingQueue() {
           status: "scanning",
           workState: "processing",
           metadata,
-          source: "listing-request"
+          source: "listing-request",
+          detailInspectionAttempted: true
         });
         performanceDiagnostics.recordListing(listing.id, "processingStart");
         recordDiagnosticStage(listing.id, "detail_inspection_started");
@@ -1618,7 +1663,10 @@ function createProcessingQueue() {
           source: "request-failed",
           metadata,
           result: null,
-          workState: "failed_final"
+          workState: "failed_final",
+          detailInspectionAttempted: true,
+          finalizationStage: "detail_unavailable",
+          finalizationReasonCodes: ["detail_inspection_failed"]
         });
         scheduleScan(0);
       } else if (state === "processed") {
@@ -1680,6 +1728,12 @@ async function processListing(entry, generation) {
     outcome: inspection.renderedOutcome || "not_reported",
     errorClass: inspection.renderedErrorClass,
     errorMessage: inspection.renderedErrorMessage
+  });
+
+  upsertLedgerEntry(listing.id, {
+    detailInspectionAttempted: true,
+    staticInspectionCompleted: inspection.staticCompleted === true,
+    renderedInspectionCompleted: inspection.renderedCompleted === true
   });
 
   await saveCachedResult(listing.id, result);
@@ -1762,11 +1816,8 @@ async function scanPage() {
     });
     performanceDiagnostics.recordListing(listing.id, "cheapFilterComplete");
 
-    if (
-      localEvaluation.decision === "reject" &&
-      localEvaluation.provenReject === true &&
-      localEvaluation.detailRequired === false
-    ) {
+    const cardFinalization = ScannerDecisionPolicy.cardFinalizationDecision(localEvaluation);
+    if (cardFinalization.mayFinalize) {
       recordFilterDiagnostic(listing.id, {
         finalDecision: "reject",
         finalReasons: diagnosticReasons(localEvaluation.rejectionReasons)
@@ -1775,6 +1826,8 @@ async function scanPage() {
         reason: localEvaluation.reason,
         code: localEvaluation.code,
         source: "search-card",
+        finalizationStage: "card",
+        finalizationReasonCodes: cardFinalization.reasonCodes,
         metadata,
         result: {
           ...localResult,
@@ -2568,6 +2621,7 @@ function serialiseMap(map) {
 
 function getActiveRunSource() {
   return {
+    evaluatorLifecycleVersion: ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION,
     sourceSearchRouteKey,
     settingsSnapshot: settings,
     scanStartedAt,
@@ -2737,11 +2791,41 @@ async function migrateExistingStorage() {
   return { changed: true, before, after };
 }
 
+async function migrateEvaluatorLifecycleState() {
+  const allData = await chrome.storage.local.get(null);
+  const plan = ScannerStorage.evaluatorLifecycleMigrationPlan(
+    allData,
+    CONFIG.activeRunStorageKey,
+    CONFIG.evaluatorLifecycleVersionKey,
+    ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION
+  );
+  if (!plan.changed) return false;
+
+  const keysToRemove = plan.keysToRemove.filter(key =>
+    !(plan.recoveryState && key === CONFIG.activeRunStorageKey)
+  );
+  if (keysToRemove.length) await removeStorageKeysInChunks(keysToRemove);
+  const patch = {
+    [CONFIG.evaluatorLifecycleVersionKey]: ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION
+  };
+  if (plan.recoveryState) patch[CONFIG.activeRunStorageKey] = plan.recoveryState;
+  await chrome.storage.local.set(patch);
+  recordLifecycleDiagnostic("evaluator_lifecycle_upgraded", {
+    pendingUploadsPreserved: Boolean(plan.recoveryState)
+  });
+  return true;
+}
+
 async function restoreActiveRun() {
   const stored = await chrome.storage.local.get(CONFIG.activeRunStorageKey);
   const state = stored[CONFIG.activeRunStorageKey];
 
-  if (!state || ![19, ScannerStorage.SCHEMA_VERSION].includes(state.version) || !state.remoteRun?.scanId) {
+  if (
+    !state ||
+    ![19, ScannerStorage.SCHEMA_VERSION].includes(state.version) ||
+    state.evaluatorLifecycleVersion !== ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION ||
+    !state.remoteRun?.scanId
+  ) {
     lifecycleState = "idle";
     scanningActive = false;
     recordLifecycleDiagnostic("startup_idle", { persisted: false });
@@ -3192,6 +3276,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message?.type === "GET_SCANNER_VERSION") {
+    sendResponse({
+      ok: true,
+      result: {
+        extensionVersion: EXTENSION_VERSION,
+        evaluatorLifecycleVersion: ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION
+      }
+    });
+    return false;
+  }
+
   if (message?.type === "GET_SCANNER_DIAGNOSTIC_REPORT") {
     sendResponse({ ok: true, result: getScannerDiagnosticReport() });
     return false;
@@ -3247,6 +3342,7 @@ async function initialiseScanner() {
 
   cleanupLegacyCardDecorations();
   await loadSettings();
+  await migrateEvaluatorLifecycleState();
   await migrateExistingStorage();
   const restored = await restoreActiveRun();
   if (!restored) updateProgress();

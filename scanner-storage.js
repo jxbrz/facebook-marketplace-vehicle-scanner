@@ -107,7 +107,14 @@
       uploadedAt: Number.isFinite(Number(entry?.uploadedAt)) ? Number(entry.uploadedAt) : null,
       reason: truncate(entry?.reason, 500),
       code: truncate(entry?.code, 80),
-      source: truncate(entry?.source, 100)
+      source: truncate(entry?.source, 100),
+      detailInspectionAttempted: entry?.detailInspectionAttempted === true,
+      staticInspectionCompleted: entry?.staticInspectionCompleted === true,
+      renderedInspectionCompleted: entry?.renderedInspectionCompleted === true,
+      finalizationStage: truncate(entry?.finalizationStage, 40),
+      finalizationReasonCodes: Array.isArray(entry?.finalizationReasonCodes)
+        ? entry.finalizationReasonCodes.slice(0, 12).map(value => truncate(value, 50))
+        : []
     };
     if (!final) {
       compact.url = validHttpsUrl(entry?.url);
@@ -169,6 +176,7 @@
     }
     const state = {
       version: SCHEMA_VERSION,
+      evaluatorLifecycleVersion: Number(source.evaluatorLifecycleVersion) || 0,
       sourceSearchRouteKey: truncate(source.sourceSearchRouteKey, 2000),
       settingsSnapshot: source.settingsSnapshot || {},
       scanStartedAt: source.scanStartedAt || null,
@@ -203,6 +211,69 @@
   function migrateActiveState(state) {
     if (!state || typeof state !== "object" || !state.remoteRun?.scanId) return null;
     return buildCompactState(state, state.storageHealth || null);
+  }
+
+  function evaluatorLifecycleMigrationPlan(storageData, activeRunKey, markerKey, currentVersion) {
+    const state = storageData?.[activeRunKey];
+    const storedVersion = Math.max(
+      Number(storageData?.[markerKey]) || 0,
+      Number(state?.evaluatorLifecycleVersion) || 0
+    );
+    if (storedVersion >= currentVersion) {
+      return { changed: false, recoveryState: null, keysToRemove: [] };
+    }
+
+    const pendingUploads = compactPendingUploads(state?.pendingUploads);
+    const hasRecoverableUploads = Boolean(state?.remoteRun?.scanId) && Object.keys(pendingUploads).length > 0;
+    const recoveryLedger = Object.fromEntries(Object.entries(pendingUploads).map(([listingId, payload]) => [
+      listingId,
+      {
+        listingId,
+        status: payload.status || "unavailable",
+        workState: "processed",
+        reason: payload.rejectionReason || null,
+        code: payload.rejectionCode || null,
+        source: "evaluator-upgrade-pending-upload",
+        discoveredAt: Date.parse(payload.discoveredAt || "") || null,
+        processedAt: Date.parse(payload.processedAt || "") || Date.now(),
+        detailInspectionAttempted: payload.rawMetadata?.runtimeLifecycle?.detailInspectionAttempted === true,
+        staticInspectionCompleted: payload.rawMetadata?.runtimeLifecycle?.staticInspectionCompleted === true,
+        renderedInspectionCompleted: payload.rawMetadata?.runtimeLifecycle?.renderedInspectionCompleted === true,
+        finalizationStage: payload.rawMetadata?.runtimeLifecycle?.finalizationStage || "cached_detail",
+        finalizationReasonCodes: payload.rawMetadata?.runtimeLifecycle?.finalizationReasonCodes || []
+      }
+    ]));
+    const recoveryState = hasRecoverableUploads
+      ? buildCompactState({
+          evaluatorLifecycleVersion: currentVersion,
+          scanStatus: "stopped",
+          lifecycleState: "idle",
+          historicalScanStatus: state.scanStatus || null,
+          stopReason: "evaluator_lifecycle_upgraded",
+          scanFinalised: true,
+          remoteRun: state.remoteRun,
+          remoteCompleted: false,
+          remoteSyncState: "pending",
+          pendingUploads,
+          ledger: recoveryLedger,
+          settingsSnapshot: {},
+          scanStartedAt: state.scanStartedAt || null,
+          scanCompletedAt: Date.now()
+        })
+      : null;
+    const obsoleteKeys = Object.keys(storageData || {}).filter(key =>
+      key === "runtimeProgress" ||
+      key.startsWith("listing:") ||
+      key.startsWith("searchSession:") ||
+      key === "lastActiveSearchRouteKey" ||
+      key === "activeSearchSession"
+    );
+    if (!recoveryState && state) obsoleteKeys.push(activeRunKey);
+    return {
+      changed: true,
+      recoveryState,
+      keysToRemove: [...new Set(obsoleteKeys)]
+    };
   }
 
   function migrationPlan(storageData, activeRunKey) {
@@ -408,6 +479,7 @@
     buildCompactState,
     compactLedger,
     compactPendingUploads,
+    evaluatorLifecycleMigrationPlan,
     isQuotaError,
     measureStorageData,
     migrateActiveState,

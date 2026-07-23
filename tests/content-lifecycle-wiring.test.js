@@ -137,10 +137,45 @@ test("cheap filters and cached results run before bounded detail queueing", () =
   const scan = functionSource("scanPage", "function scheduleScan");
   assert.ok(scan.indexOf("cachedResult") < scan.indexOf("localEvaluation"));
   assert.ok(scan.indexOf("localEvaluation.decision") < scan.indexOf("ensureProcessingQueue().enqueue"));
-  assert.match(scan, /localEvaluation\.provenReject === true/);
-  assert.match(scan, /localEvaluation\.detailRequired === false/);
+  assert.match(scan, /ScannerDecisionPolicy\.cardFinalizationDecision\(localEvaluation\)/);
+  assert.match(scan, /if \(cardFinalization\.mayFinalize\)/);
   assert.doesNotMatch(scan, /processListing\(entry/);
   assert.match(source, /listingProcessingConcurrency: 3/);
+});
+
+test("card finalization and upload have independent defensive guards", () => {
+  const finalization = functionSource("markFinal", "function classifyListing");
+  assert.match(finalization, /cardFinalizationDecision\(evaluation\)/);
+  assert.match(finalization, /Unsafe card-stage finalization was blocked/);
+  const upload = functionSource("queueRemoteListing", "async function pruneUploadedListings");
+  assert.match(upload, /cardFinalizationValidated !== true/);
+  assert.match(upload, /Unsafe card-stage upload was blocked/);
+});
+
+test("released start path cannot inject a temporary acceptance filter", () => {
+  const start = functionSource("startNewScan", "async function pauseScanByUser");
+  assert.doesNotMatch(start, /normalModeTestConfig|scannerDebugDiagnostics:\s*true/);
+  assert.match(source, /return respond\(startNewScan\(\)\)/);
+});
+
+test("normal runtime records detail completion and finalization provenance", () => {
+  const process = functionSource("processListing", "async function scanPage");
+  for (const field of ["detailInspectionAttempted", "staticInspectionCompleted", "renderedInspectionCompleted"]) {
+    assert.match(source, new RegExp(field));
+  }
+  assert.match(process, /inspection\.staticCompleted === true/);
+  assert.match(process, /inspection\.renderedCompleted === true/);
+  assert.match(source, /finalizationStage: "card"/);
+  assert.match(source, /finalizationStage: "detail_unavailable"/);
+  assert.match(source, /"cached_detail" : "detail"/);
+});
+
+test("start refuses an old content script and refreshes the Marketplace tab", () => {
+  const popup = fs.readFileSync("popup.js", "utf8");
+  assert.match(popup, /GET_SCANNER_VERSION/);
+  assert.match(popup, /evaluatorLifecycleVersion/);
+  assert.match(popup, /chrome\.tabs\.reload\(tab\.id\)/);
+  assert.match(source, /type === "GET_SCANNER_VERSION"/);
 });
 
 test("filter diagnostics are opt-in, bounded and contain no listing content", () => {

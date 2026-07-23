@@ -156,7 +156,8 @@
         year: source(input.sources?.year, "unknown"), make: source(input.sources?.make, identity.source || "unknown"),
         model: source(input.sources?.model, identity.source || "unknown"), transmission: source(input.sources?.transmission, "unknown"),
         fuelType: source(input.sources?.fuelType, "unknown"), colour: source(input.sources?.colour, "unknown"),
-        bodyType: source(input.sources?.bodyType, "unknown"), categoryStatus: source(input.sources?.categoryStatus, "category_evidence")
+        bodyType: source(input.sources?.bodyType, "unknown"), categoryStatus: source(input.sources?.categoryStatus, "category_evidence"),
+        textCorpus: source(input.sources?.textCorpus, description ? "listing_detail" : "search_card")
       },
       confidence: {
         price: input.confidence?.price || (parsePrice(input.price) === null ? "unknown" : "moderate"),

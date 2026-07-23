@@ -192,6 +192,80 @@ test("old storage migration removes only scanner caches and preserves configurat
   assert.deepEqual(secondPlan.keysToRemove, []);
 });
 
+test("evaluator upgrade invalidates old decisions and active execution state", () => {
+  const data = {
+    extensionApiToken: "preserve-token",
+    dashboardUrl: "https://dashboard.example",
+    localFilterDraft: { category: { mode: "any" } },
+    activeSavedSearchId: "saved-search-1",
+    runtimeProgress: { rejected: 99 },
+    "listing:card-only": { result: { status: "rejected" } },
+    "scannerV19:activeRun": {
+      ...oldState(),
+      pendingUploads: {},
+      evaluatorLifecycleVersion: 1
+    }
+  };
+  const plan = ScannerStorage.evaluatorLifecycleMigrationPlan(
+    data,
+    "scannerV19:activeRun",
+    "scannerEvaluatorLifecycleVersion",
+    2
+  );
+  assert.equal(plan.changed, true);
+  assert.equal(plan.recoveryState, null);
+  assert.equal(plan.keysToRemove.includes("scannerV19:activeRun"), true);
+  assert.equal(plan.keysToRemove.includes("runtimeProgress"), true);
+  assert.equal(plan.keysToRemove.includes("listing:card-only"), true);
+  assert.equal(data.extensionApiToken, "preserve-token");
+  assert.equal(data.localFilterDraft.category.mode, "any");
+  assert.equal(data.activeSavedSearchId, "saved-search-1");
+});
+
+test("evaluator upgrade preserves only fully built pending uploads in sync recovery", () => {
+  const state = {
+    ...oldState(),
+    evaluatorLifecycleVersion: 1,
+    pendingUploads: {
+      pending: pendingPayload("pending", {
+        status: "matched",
+        rawMetadata: {
+          runtimeLifecycle: {
+            detailInspectionAttempted: true,
+            staticInspectionCompleted: true,
+            renderedInspectionCompleted: false,
+            finalizationStage: "detail",
+            finalizationReasonCodes: ["match"]
+          }
+        }
+      })
+    }
+  };
+  const plan = ScannerStorage.evaluatorLifecycleMigrationPlan(
+    { "scannerV19:activeRun": state },
+    "scannerV19:activeRun",
+    "scannerEvaluatorLifecycleVersion",
+    2
+  );
+  assert.equal(plan.recoveryState.evaluatorLifecycleVersion, 2);
+  assert.equal(plan.recoveryState.scanFinalised, true);
+  assert.equal(plan.recoveryState.remoteSyncState, "pending");
+  assert.deepEqual(Object.keys(plan.recoveryState.pendingUploads), ["pending"]);
+  assert.deepEqual(Object.keys(plan.recoveryState.ledger), ["pending"]);
+  assert.equal(plan.recoveryState.ledger.pending.detailInspectionAttempted, true);
+  assert.equal(plan.keysToRemove.includes("scannerV19:activeRun"), false);
+});
+
+test("current evaluator state migration is deterministic and leaves storage untouched", () => {
+  const plan = ScannerStorage.evaluatorLifecycleMigrationPlan(
+    { scannerEvaluatorLifecycleVersion: 2 },
+    "scannerV19:activeRun",
+    "scannerEvaluatorLifecycleVersion",
+    2
+  );
+  assert.deepEqual(plan, { changed: false, recoveryState: null, keysToRemove: [] });
+});
+
 test("quota recovery prunes once and retries exactly once", async () => {
   let writes = 0;
   let prunes = 0;

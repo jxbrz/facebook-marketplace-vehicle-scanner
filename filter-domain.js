@@ -206,10 +206,22 @@
     const config = normaliseFilterConfig(inputConfig);
     const phase = options.phase === "prefilter" ? "prefilter" : "final";
     const rejectionReasons = [];
+    const rejectionEvidence = [];
     const unresolvedReasons = [];
     const warnings = [];
     const missingRequiredFields = [];
     const evaluatedValues = {};
+
+    function reject(code, field, reason) {
+      rejectionReasons.push(reason);
+      rejectionEvidence.push({
+        code,
+        field,
+        source: String(facts.sources?.[field] || "unknown"),
+        confidence: String(facts.confidence?.[field] || "unknown"),
+        valueKnown: facts[field] !== null && facts[field] !== undefined && facts[field] !== "unknown"
+      });
+    }
 
     function identityEvidenceReliable(field) {
       if (phase === "final") return true;
@@ -232,7 +244,7 @@
       if (selectedPolicy === "include_with_warning") warnings.push(`${label} unavailable after detail inspection`);
       if (selectedPolicy === "ignore_filter_for_unknown") warnings.push(`${label} unavailable; filter ignored by saved-search policy`);
       if (selectedPolicy === "inspect_then_reject" || selectedPolicy === "exclude") {
-        rejectionReasons.push(`${label} unavailable after detail inspection`);
+        reject(`${field}_unavailable`, field, `${label} unavailable after detail inspection`);
       }
     }
 
@@ -241,8 +253,8 @@
       const active = minimum !== null || maximum !== null;
       evaluatedValues[field] = value;
       if (value === null || value === undefined) return unknown(field, policyName, active);
-      if (minimum !== null && value < minimum) rejectionReasons.push(`${LABELS[field]} ${formatNumber(value)}${suffix} is below minimum ${formatNumber(minimum)}${suffix}`);
-      if (maximum !== null && value > maximum) rejectionReasons.push(`${LABELS[field]} ${formatNumber(value)}${suffix} exceeds maximum ${formatNumber(maximum)}${suffix}`);
+      if (minimum !== null && value < minimum) reject(`${field}_below_minimum`, field, `${LABELS[field]} ${formatNumber(value)}${suffix} is below minimum ${formatNumber(minimum)}${suffix}`);
+      if (maximum !== null && value > maximum) reject(`${field}_above_maximum`, field, `${LABELS[field]} ${formatNumber(value)}${suffix} exceeds maximum ${formatNumber(maximum)}${suffix}`);
     }
 
     numeric("price", "price", config.priceMileage.minPrice, config.priceMileage.maxPrice, " GBP");
@@ -258,12 +270,12 @@
       VehicleCatalogue.key(make) === VehicleCatalogue.key(facts.make) ||
       VehicleCatalogue.key(make) === VehicleCatalogue.key(VehicleCatalogue.OTHER_MAKE) && !VehicleCatalogue.isKnownMake(facts.make)
     )) {
-      if (identityEvidenceReliable("make")) rejectionReasons.push(`Make ${facts.make} is not selected`);
+      if (identityEvidenceReliable("make")) reject("make_not_selected", "make", `Make ${facts.make} is not selected`);
       else unresolvedReasons.push(`Make evidence is uncertain on the card; detail inspection required`);
     }
     if (!facts.model) unknown("model", "makeModel", modelsActive);
     else if (modelsActive && !config.vehicle.models.some(model => VehicleCatalogue.key(model) === VehicleCatalogue.key(facts.model))) {
-      if (identityEvidenceReliable("model")) rejectionReasons.push(`Model ${facts.model} is not selected`);
+      if (identityEvidenceReliable("model")) reject("model_not_selected", "model", `Model ${facts.model} is not selected`);
       else unresolvedReasons.push(`Model evidence is uncertain on the card; detail inspection required`);
     }
 
@@ -273,12 +285,12 @@
       evaluatedValues[field] = value;
       if (value === "unknown" || value === null || value === undefined) {
         if (phase === "prefilter") return unknown(field, policyName, active);
-        if (selectionConfig.exclude.includes("unknown")) return void rejectionReasons.push(`${LABELS[field]} is unknown and excluded`);
+        if (selectionConfig.exclude.includes("unknown")) return void reject(`${field}_unknown_excluded`, field, `${LABELS[field]} is unknown and excluded`);
         if (selectionConfig.include.includes("unknown")) return;
         return unknown(field, policyName, active);
       }
-      if (selectionConfig.include.length && !selectionConfig.include.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is not selected`);
-      if (selectionConfig.exclude.includes(value)) rejectionReasons.push(`${LABELS[field]} ${value} is excluded`);
+      if (selectionConfig.include.length && !selectionConfig.include.includes(value)) reject(`${field}_not_selected`, field, `${LABELS[field]} ${value} is not selected`);
+      if (selectionConfig.exclude.includes(value)) reject(`${field}_excluded`, field, `${LABELS[field]} ${value} is excluded`);
     }
     selected("transmission", "transmission", config.specification.transmissions);
     if (config.advancedFiltersEnabled) {
@@ -292,21 +304,26 @@
     evaluatedValues.repairedVehicle = Boolean(facts.repairedVehicle);
     const categoryActive = config.category.mode !== "any";
     if (category === "unknown") unknown("categoryStatus", "categoryStatus", categoryActive && (phase === "prefilter" || !(config.category.mode === "selected" && config.category.statuses.includes("unknown"))));
-    if (config.category.mode === "clean_only" && category !== "clean" && category !== "unknown") rejectionReasons.push(`Category status ${category.replace("cat_", "Cat ").toUpperCase()} is not clean`);
-    if (config.category.mode === "category_only" && category !== "unknown" && !["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)) rejectionReasons.push(`Category status ${category} is not a confirmed category vehicle`);
-    if (config.category.mode === "selected" && category !== "unknown" && !config.category.statuses.includes(category)) rejectionReasons.push(`Category status ${category.replace("cat_", "Cat ")} is not selected`);
-    if (facts.repairedVehicle && !config.category.includeRepairedVehicles) rejectionReasons.push("Advert is described as repaired, but repaired vehicles are not included");
+    if (config.category.mode === "clean_only" && category !== "clean" && category !== "unknown") reject("category_not_clean", "categoryStatus", `Category status ${category.replace("cat_", "Cat ").toUpperCase()} is not clean`);
+    if (config.category.mode === "category_only" && category !== "unknown" && !["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)) reject("category_not_confirmed", "categoryStatus", `Category status ${category} is not a confirmed category vehicle`);
+    if (config.category.mode === "selected" && category !== "unknown" && !config.category.statuses.includes(category)) reject("category_not_selected", "categoryStatus", `Category status ${category.replace("cat_", "Cat ")} is not selected`);
+    if (facts.repairedVehicle && !config.category.includeRepairedVehicles) reject("repaired_vehicle_excluded", "categoryStatus", "Advert is described as repaired, but repaired vehicles are not included");
 
     const corpus = String(facts.textCorpus || "").toLowerCase();
     if (config.advancedFiltersEnabled) for (const keyword of config.text.requiredKeywords) {
       if (corpus.includes(keyword)) continue;
       if (phase === "prefilter") unresolvedReasons.push(`Required keyword “${keyword}” not confirmed on the card; detail inspection required`);
-      else rejectionReasons.push(`Required keyword “${keyword}” was not found`);
+      else reject("required_keyword_missing", "textCorpus", `Required keyword “${keyword}” was not found`);
     }
-    for (const keyword of config.text.excludedKeywords) if (corpus.includes(keyword)) rejectionReasons.push(`Excluded keyword “${keyword}” found`);
+    for (const keyword of config.text.excludedKeywords) if (corpus.includes(keyword)) reject("excluded_keyword_present", "textCorpus", `Excluded keyword “${keyword}” found`);
 
     const unique = values => [...new Set(values)];
     const rejected = unique(rejectionReasons);
+    const rejectedReasonSet = new Set(rejected);
+    const rejectedEvidence = rejectionEvidence.filter((item, index) =>
+      rejectedReasonSet.has(rejectionReasons[index]) &&
+      rejectionEvidence.findIndex(candidate => candidate.code === item.code && candidate.field === item.field) === index
+    );
     const unresolved = unique(unresolvedReasons);
     const decision = rejected.length ? "reject" : unresolved.length ? "unresolved" : "match";
     return {
@@ -315,6 +332,8 @@
       provenReject: decision === "reject",
       evidenceQuality: decision === "reject" ? "proven" : unresolved.length ? "incomplete" : "complete",
       rejectionReasons: rejected,
+      rejectionReasonCodes: unique(rejectedEvidence.map(item => item.code)),
+      rejectionEvidence: rejectedEvidence,
       unresolvedReasons: unresolved,
       warnings: unique(warnings),
       evaluatedValues,

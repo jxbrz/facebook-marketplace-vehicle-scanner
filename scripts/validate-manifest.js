@@ -33,6 +33,7 @@ assert.deepEqual(manifest.content_scripts[0].js, [
   "scanner-diagnostics.js",
   "scanner-runtime.js",
   "scanner-storage.js",
+  "scanner-decision-policy.js",
   "vehicle-catalogue.js",
   "listing-facts.js",
   "filter-domain.js",

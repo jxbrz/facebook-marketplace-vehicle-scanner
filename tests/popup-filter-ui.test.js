@@ -62,3 +62,8 @@ test("popup exposes warnings and aggregate reasons", () => {
   assert.match(js, /rejectionReasonCounts/);
   assert.match(html, /id="reasonCounts"/);
 });
+
+test("release popup excludes temporary acceptance controls", () => {
+  assert.doesNotMatch(html, /runNormalModeTest|copyNormalModeReport|Temporary 23\.2\.3 acceptance/);
+  assert.doesNotMatch(js, /normalModeTestConfig|copyTextWithoutPermission/);
+});
