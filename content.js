@@ -3556,3 +3556,4 @@ initialiseScanner().catch(error => {
   console.error("Marketplace Vehicle Scanner initialisation failed:", error);
   updateProgress();
 });
+

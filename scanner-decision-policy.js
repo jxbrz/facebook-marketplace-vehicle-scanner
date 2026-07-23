@@ -5,7 +5,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function createScannerDecisionPolicy() {
   "use strict";
 
-  const EVALUATOR_LIFECYCLE_VERSION = 3;
+  const EVALUATOR_LIFECYCLE_VERSION = 4;
   const CARD_FINALIZATION_CODES = new Set([
     "price_below_minimum",
     "price_above_maximum",
@@ -72,18 +72,19 @@
       ? evaluation.rejectionReasons
       : [];
     const byCode = new Map(evidence.map(item => [item?.code, item]));
+    const reliableReasonCodes = reasonCodes.filter(code =>
+      CARD_FINALIZATION_CODES.has(code) &&
+      evidenceIsReliable(byCode.get(code))
+    );
     const reliable =
       evaluation.decision === "reject" &&
       evaluation.provenReject === true &&
-      evaluation.detailRequired === false &&
-      rejectionReasons.length > 0 &&
-      reasonCodes.length === rejectionReasons.length &&
-      reasonCodes.every(code => CARD_FINALIZATION_CODES.has(code) && evidenceIsReliable(byCode.get(code)));
+      reliableReasonCodes.length > 0;
 
     return {
       mayFinalize: reliable,
       action: reliable ? "finalize_reject" : "inspect_detail",
-      reasonCodes
+      reasonCodes: reliableReasonCodes
     };
   }
 
