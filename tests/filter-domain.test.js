@@ -198,6 +198,24 @@ test("definite numeric failures remain eligible for early rejection", () => {
   assert.equal(result.decision, "reject");
   assert.equal(result.provenReject, true);
   assert.equal(result.detailRequired, false);
+  assert.deepEqual(result.rejectionReasonCodes, ["price_above_maximum"]);
+  assert.equal(result.rejectionEvidence[0].valueKnown, true);
+});
+
+test("prefilter rejection evidence retains exact source and confidence", () => {
+  const input = facts({
+    price: 6500,
+    sources: { price: "search_card" },
+    confidence: { price: "moderate" }
+  });
+  const result = Filters.evaluateFilters(input, { priceMileage: { maxPrice: 6000 } }, { phase: "prefilter" });
+  assert.deepEqual(result.rejectionEvidence, [{
+    code: "price_above_maximum",
+    field: "price",
+    source: "search_card",
+    confidence: "moderate",
+    valueKnown: true
+  }]);
 });
 
 test("ambiguous card model waits for detail while reliable identity can reject", () => {
