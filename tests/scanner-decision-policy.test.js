@@ -107,3 +107,53 @@ test("structured reason codes and provenance must cover every rejection", () => 
   };
   assert.equal(Policy.cardFinalizationDecision(incomplete).mayFinalize, false);
 });
+
+test("reliable static detail rejection skips rendered extraction", () => {
+  const config = Filters.normaliseFilterConfig({ priceMileage: { maxMileage: 50000 } });
+  const evaluation = Filters.evaluateFilters(detailFacts({ mileage: 62000 }), config, { phase: "final" });
+  assert.equal(evaluation.decision, "reject");
+  assert.deepEqual(
+    Policy.staticDetailFinalizationDecision(evaluation),
+    {
+      mayFinalize: true,
+      action: "finalize_static_reject",
+      reasonCodes: ["mileage_above_maximum"]
+    }
+  );
+});
+
+test("rendered extraction remains required for unresolved active facts and potential matches", () => {
+  for (const evaluation of [
+    {
+      decision: "unresolved",
+      provenReject: false,
+      detailRequired: true,
+      rejectionReasons: [],
+      rejectionReasonCodes: [],
+      rejectionEvidence: []
+    },
+    {
+      decision: "match",
+      provenReject: false,
+      detailRequired: false,
+      rejectionReasons: [],
+      rejectionReasonCodes: [],
+      rejectionEvidence: []
+    },
+    {
+      decision: "reject",
+      provenReject: true,
+      detailRequired: false,
+      rejectionReasons: ["Required description keyword missing"],
+      rejectionReasonCodes: ["required_keyword_missing"],
+      rejectionEvidence: [{
+        code: "required_keyword_missing",
+        source: "listing_detail",
+        confidence: "moderate",
+        valueKnown: true
+      }]
+    }
+  ]) {
+    assert.equal(Policy.staticDetailFinalizationDecision(evaluation).action, "inspect_rendered");
+  }
+});

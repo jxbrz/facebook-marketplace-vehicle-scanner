@@ -109,7 +109,7 @@ Explicit `no`, `not`, `never`, and `without` are evaluated in limited local cont
 
 Version 23.0.3 treats card classification as preliminary only. After controlled rendered extraction completes or falls back, the detector runs over trusted static/rendered descriptions, structured title and vehicle attributes, and card evidence. Any final positive S/N/C/D result is rejected before ledger persistence or upload. To reprocess previously misclassified adverts, start a new scan over the same Marketplace search; existing hosted rows remain visible until deliberately cleaned up.
 
-The legacy `excludeCategories` settings key remains readable for schema compatibility. Schema v2 maps the legacy exclusion set to `clean_only` and supports `any`, `clean_only`, `category_only`, or an explicit set of clean/Cat S/Cat N/Cat C/Cat D/other/unknown statuses. Missing evidence remains unknown rather than being assumed clean.
+The legacy `excludeCategories` settings key remains readable for schema compatibility. Schema v2 maps the legacy exclusion set to `clean_only` and supports `any`, `clean_only`, `category_only`, or an explicit set of clean/Cat S/Cat N/Cat C/Cat D/other/unknown statuses. In the user interface, `clean_only` is labelled **Exclude category vehicles**: after full detail inspection, adverts with no category wording are presumed clean for filtering while their underlying category fact remains Unknown. This is not an independent HPI check.
 
 This is disclosure detection, not an HPI check.
 

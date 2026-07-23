@@ -32,7 +32,9 @@
     "vehicle"
   ]);
   const NEGATION_WORDS = new Set(["no", "not", "never", "without"]);
-  const AMBIGUITY_WORDS = new Set(["cannot", "cant", "unclear", "unknown"]);
+  const AMBIGUITY_WORDS = new Set([
+    "cannot", "cant", "dispute", "disputed", "disputes", "unclear", "unknown"
+  ]);
   const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/u;
   const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
   const SOURCE_STRENGTH = new Map([
@@ -147,7 +149,16 @@
     return window.slice(clauseStart + 1);
   }
 
-  function evaluateContext(original, matchStart, tokens, termTokenIndex, letterTokenIndex) {
+  function localSuffix(original, matchEnd) {
+    const window = original.slice(matchEnd, matchEnd + 100);
+    const clauseEnd = [".", "!", "?", ";", ",", "\n"]
+      .map(character => window.indexOf(character))
+      .filter(index => index >= 0)
+      .sort((left, right) => left - right)[0];
+    return clauseEnd === undefined ? window : window.slice(0, clauseEnd);
+  }
+
+  function evaluateContext(original, matchStart, matchEnd, tokens, termTokenIndex, letterTokenIndex) {
     const precedingToken = tokens[Math.min(termTokenIndex, letterTokenIndex) - 1]?.value;
     const followingToken = tokens[Math.max(termTokenIndex, letterTokenIndex) + 1]?.value;
 
@@ -170,6 +181,12 @@
     if (prefixTokens.some(token => AMBIGUITY_WORDS.has(token))) {
       return { disposition: "ambiguous", reason: "local_ambiguous_context" };
     }
+    const suffixTokens = tokenise(normaliseCategoryText(localSuffix(original, matchEnd)))
+      .map(token => token.value)
+      .slice(0, 6);
+    if (suffixTokens.some(token => AMBIGUITY_WORDS.has(token))) {
+      return { disposition: "ambiguous", reason: "local_ambiguous_context" };
+    }
 
     return { disposition: "positive", reason: null };
   }
@@ -179,6 +196,7 @@
     const context = evaluateContext(
       normalised.original,
       range.start,
+      range.end,
       candidate.tokens,
       candidate.termTokenIndex,
       candidate.letterTokenIndex
@@ -241,6 +259,31 @@
               : "letter_before_ocr_spaced_cat"
           });
         }
+      }
+    }
+
+    if (!candidates.length) {
+      for (let index = 0; index < tokens.length; index += 1) {
+        const values = tokens.slice(index, index + 4).map(token => token.value);
+        const insuranceWriteOff =
+          values[0] === "insurance" &&
+          ["write", "written"].includes(values[1]) &&
+          values[2] === "off";
+        const previouslyWrittenOff =
+          ["previously", "recorded"].includes(values[0]) &&
+          values[1] === "written" &&
+          values[2] === "off";
+        if (!insuranceWriteOff && !previouslyWrittenOff) continue;
+        const lastIndex = index + 2;
+        candidates.push({
+          category: "other",
+          start: tokens[index].start,
+          end: tokens[lastIndex].end,
+          tokens,
+          termTokenIndex: index,
+          letterTokenIndex: lastIndex,
+          rule: "generic_insurance_write_off"
+        });
       }
     }
 
@@ -343,7 +386,9 @@
         ? result.detectedCategories.slice(0, 4)
         : [],
       evidence: boundedEvidence("evidence"),
-      negatedEvidence: boundedEvidence("negatedEvidence")
+      negatedEvidence: boundedEvidence("negatedEvidence"),
+      ambiguousEvidence: boundedEvidence("ambiguousEvidence"),
+      excludedEvidence: boundedEvidence("excludedEvidence")
     };
   }
 

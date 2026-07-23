@@ -93,6 +93,62 @@ test("supports clean-only, category-only and selected category combinations", ()
   assert.equal(evaluate({ category: { mode: "selected", statuses: ["unknown"] } }, { description: "No category statement", category: null }).decision, "match");
 });
 
+test("Exclude category vehicles is phase-safe and presumes clean only after detail", () => {
+  const config = Filters.normaliseFilterConfig({ category: { mode: "clean_only" } });
+  const card = evaluate(config, {
+    description: null,
+    categoryStatus: null,
+    categoryEvidenceState: "no_category_evidence"
+  }, "prefilter");
+  assert.equal(card.decision, "unresolved");
+  assert.equal(card.detailRequired, true);
+  assert.equal(card.provenReject, false);
+
+  const final = evaluate(config, {
+    description: "Full service history",
+    categoryStatus: null,
+    categoryEvidenceState: "no_category_evidence"
+  });
+  assert.equal(final.decision, "match");
+  assert.equal(final.categoryAssessment, "presumedCleanNoCategoryEvidence");
+  assert.equal(final.evaluatedValues.categoryStatus, "unknown");
+  assert.match(final.warnings[0], /not HPI verified/);
+});
+
+test("Exclude category vehicles rejects every reliable category disclosure", () => {
+  const config = { category: { mode: "clean_only", includeRepairedVehicles: true } };
+  for (const input of [
+    { description: "Cat N", category: "N", categoryDetected: true },
+    { description: "Category S", category: "S", categoryDetected: true },
+    { description: "Recorded insurance write-off", category: "OTHER", categoryDetected: true },
+    { description: "Cat S and structurally damaged", category: "S", categoryDetected: true }
+  ]) {
+    const result = evaluate(config, input);
+    assert.equal(result.decision, "reject", input.description);
+    assert.equal(result.categoryAssessment, "confirmedCategory", input.description);
+  }
+});
+
+test("category modes retain their distinct unknown-evidence semantics", () => {
+  const noCategory = {
+    description: "Well maintained and repaired paintwork",
+    categoryStatus: null,
+    categoryEvidenceState: "no_category_evidence"
+  };
+  assert.equal(evaluate({ category: { mode: "any", includeRepairedVehicles: true } }, noCategory).decision, "match");
+  assert.equal(evaluate({ category: { mode: "category_only", includeRepairedVehicles: true } }, noCategory).decision, "reject");
+  assert.equal(evaluate({ category: { mode: "selected", statuses: ["cat_n"], includeRepairedVehicles: true } }, noCategory).decision, "reject");
+  assert.equal(evaluate({ category: { mode: "selected", statuses: ["unknown"], includeRepairedVehicles: true } }, noCategory).decision, "match");
+  assert.equal(evaluate({ category: { mode: "clean_only", includeRepairedVehicles: true } }, noCategory).decision, "match");
+});
+
+test("existing clean_only searches retain their identifier and new label", () => {
+  const config = Filters.normaliseFilterConfig({ category: { mode: "clean_only" } });
+  assert.equal(config.category.mode, "clean_only");
+  assert.equal(Filters.optionLabel("clean_only"), "Exclude category vehicles");
+  assert.equal(Filters.filterSummary(config).find(item => item.label === "Category").value, "Exclude category vehicles");
+});
+
 test("keeps repaired-description handling distinct from confirmed category status", () => {
   const repaired = { description: "HPI clear and professionally repaired", categoryStatus: "clean" };
   const excluded = evaluate({ category: { mode: "any", includeRepairedVehicles: false } }, repaired);

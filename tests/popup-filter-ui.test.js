@@ -32,6 +32,11 @@ test("full settings page implements dependent controls and three-state specifica
   assert.doesNotMatch(settingsCss, /overflow:\s*auto/);
 });
 
+test("category settings explain presumed-clean advert handling without claiming verification", () => {
+  assert.match(settingsHtml, /Adverts are included when no category wording is found\. This is not an HPI check\./);
+  assert.match(settingsJs, /FilterDomain\.optionLabel/);
+});
+
 test("shared storage keeps dashboard searches read-only and local drafts separate", () => {
   assert.match(storageJs, /localFilterDraft/);
   assert.match(storageJs, /activateDashboardSearch/);

@@ -116,6 +116,20 @@
     return /\b(?:(?:fully|professionally|previously)\s+)?repaired\b/i.test(evidence);
   }
 
+  function normaliseCategoryEvidenceState(input, categoryStatus) {
+    if (categoryStatus === "clean") return "confirmed_clean";
+    if (["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(categoryStatus)) {
+      return "confirmed_category";
+    }
+    if (
+      input.categoryEvidenceState === "explicitly_unknown" ||
+      input.categoryExplicitlyUnknown === true
+    ) {
+      return "explicitly_unknown";
+    }
+    return "no_category_evidence";
+  }
+
   function source(value, fallback) {
     return text(value, 80) || fallback;
   }
@@ -129,6 +143,7 @@
       title,
       text: input.identityText
     });
+    const categoryStatus = normaliseCategory(input);
     const facts = {
       listingId: text(input.listingId, 160),
       listingUrl: text(input.listingUrl || input.url, 4000),
@@ -144,7 +159,8 @@
       fuelType: normaliseFuel(input.fuelType),
       colour: normaliseColour(input.colour),
       bodyType: normaliseBodyType(input.bodyType || input.bodyStyle),
-      categoryStatus: normaliseCategory(input),
+      categoryStatus,
+      categoryEvidenceState: normaliseCategoryEvidenceState(input, categoryStatus),
       categoryEvidence: text(input.categoryEvidence || input.categoryMatch, 240),
       repairedVehicle: describedAsRepaired(input),
       sellerType: /\bdealer(?:ship)?\b/i.test(input.sellerType || "") ? "dealer" : /\bprivate\b/i.test(input.sellerType || "") ? "private" : "unknown",
@@ -186,6 +202,7 @@
   return {
     BODY_TYPES, COLOURS, FUELS, TRANSMISSIONS,
     describedAsRepaired, normaliseBodyType, normaliseCategory, normaliseColour, normaliseFuel,
-    normaliseListingFacts, normaliseTransmission, parseMileage, parsePrice, parseYear
+    normaliseCategoryEvidenceState, normaliseListingFacts, normaliseTransmission, parseMileage,
+    parsePrice, parseYear
   };
 });

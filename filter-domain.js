@@ -68,6 +68,8 @@
   }
 
   function optionLabel(value) {
+    if (value === "clean_only" || value === "clean only") return "Exclude category vehicles";
+    if (value === "selected") return "Selected categories";
     if (value === "semiautomatic") return "Semi-automatic";
     if (value === "suv" || value === "lpg") return value.toUpperCase();
     return String(value).replace(/^./, character => character.toUpperCase());
@@ -300,10 +302,39 @@
     }
 
     const category = facts.categoryStatus || "unknown";
+    const categoryEvidenceState = facts.categoryEvidenceState ||
+      (category === "clean"
+        ? "confirmed_clean"
+        : ["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)
+          ? "confirmed_category"
+          : "no_category_evidence");
+    const categoryAssessment = category === "clean"
+      ? "confirmedClean"
+      : ["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)
+        ? "confirmedCategory"
+        : categoryEvidenceState === "explicitly_unknown"
+          ? "explicitlyUnknown"
+          : phase === "final"
+            ? "presumedCleanNoCategoryEvidence"
+            : "unassessed";
     evaluatedValues.categoryStatus = category;
+    evaluatedValues.categoryAssessment = categoryAssessment;
     evaluatedValues.repairedVehicle = Boolean(facts.repairedVehicle);
     const categoryActive = config.category.mode !== "any";
-    if (category === "unknown") unknown("categoryStatus", "categoryStatus", categoryActive && (phase === "prefilter" || !(config.category.mode === "selected" && config.category.statuses.includes("unknown"))));
+    const presumedCleanForFilter =
+      config.category.mode === "clean_only" &&
+      categoryAssessment === "presumedCleanNoCategoryEvidence";
+    if (category === "unknown" && !presumedCleanForFilter) {
+      unknown(
+        "categoryStatus",
+        "categoryStatus",
+        categoryActive &&
+          (phase === "prefilter" || !(config.category.mode === "selected" && config.category.statuses.includes("unknown")))
+      );
+    }
+    if (presumedCleanForFilter) {
+      warnings.push("No category wording found after detail inspection; presumed clean for filtering only, not HPI verified");
+    }
     if (config.category.mode === "clean_only" && category !== "clean" && category !== "unknown") reject("category_not_clean", "categoryStatus", `Category status ${category.replace("cat_", "Cat ").toUpperCase()} is not clean`);
     if (config.category.mode === "category_only" && category !== "unknown" && !["cat_s", "cat_n", "cat_c", "cat_d", "other"].includes(category)) reject("category_not_confirmed", "categoryStatus", `Category status ${category} is not a confirmed category vehicle`);
     if (config.category.mode === "selected" && category !== "unknown" && !config.category.statuses.includes(category)) reject("category_not_selected", "categoryStatus", `Category status ${category.replace("cat_", "Cat ")} is not selected`);
@@ -337,13 +368,15 @@
       unresolvedReasons: unresolved,
       warnings: unique(warnings),
       evaluatedValues,
+      categoryAssessment,
       missingRequiredFields: unique(missingRequiredFields),
       diagnostics: {
         filterSchemaVersion: config.filterSchemaVersion,
         catalogueVersion: config.catalogueVersion,
         phase,
         unknownPolicies: config.unknownPolicies,
-        categoryEvidence: facts.categoryEvidence || null
+        categoryEvidence: facts.categoryEvidence || null,
+        categoryEvidenceState
       }
     };
   }
@@ -359,7 +392,9 @@
       : `${minimum === null ? "Any" : prefix + formatNumber(minimum) + suffix} – ${maximum === null ? "Any" : prefix + formatNumber(maximum) + suffix}`;
     const makes = config.vehicle.makes.length ? config.vehicle.makes.join(", ") : "Any make";
     const models = config.vehicle.models.length ? config.vehicle.models.join(", ") : "Any model";
-    const category = config.category.mode === "selected"
+    const category = config.category.mode === "clean_only"
+      ? "Exclude category vehicles"
+      : config.category.mode === "selected"
       ? config.category.statuses.map(optionLabel).join(", ") || "No statuses"
       : config.category.mode.replaceAll("_", " ").replace(/^./, character => character.toUpperCase());
     return [
