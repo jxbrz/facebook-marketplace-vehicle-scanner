@@ -34,13 +34,27 @@ test("normalises specification fields and retains their raw values", () => {
 });
 
 test("treats absent category evidence as unknown and only explicit clear evidence as clean", () => {
-  assert.equal(Facts.normaliseListingFacts({ title: "Volkswagen Polo" }).categoryStatus, "unknown");
-  assert.equal(Facts.normaliseListingFacts({ description: "HPI clear with report" }).categoryStatus, "clean");
+  const absent = Facts.normaliseListingFacts({ title: "Volkswagen Polo" });
+  assert.equal(absent.categoryStatus, "unknown");
+  assert.equal(absent.categoryEvidenceState, "no_category_evidence");
+  const clear = Facts.normaliseListingFacts({ description: "HPI clear with report" });
+  assert.equal(clear.categoryStatus, "clean");
+  assert.equal(clear.categoryEvidenceState, "confirmed_clean");
   const category = Facts.normaliseListingFacts({ category: "N", categoryDetected: true, categoryEvidence: "Cat N repaired" });
   assert.equal(category.categoryStatus, "cat_n");
+  assert.equal(category.categoryEvidenceState, "confirmed_category");
   assert.equal(category.categoryEvidence, "Cat N repaired");
   assert.equal(category.repairedVehicle, true);
   assert.equal(Facts.normaliseListingFacts({ description: "Requires a repair" }).repairedVehicle, false);
+});
+
+test("keeps explicit category uncertainty separate from missing evidence", () => {
+  const facts = Facts.normaliseListingFacts({
+    categoryEvidenceState: "explicitly_unknown",
+    categoryExplicitlyUnknown: true
+  });
+  assert.equal(facts.categoryStatus, "unknown");
+  assert.equal(facts.categoryEvidenceState, "explicitly_unknown");
 });
 
 test("reports unknown fields explicitly", () => {

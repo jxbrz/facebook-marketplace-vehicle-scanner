@@ -374,7 +374,7 @@ function sanitiseInspectionError(error) {
   };
 }
 
-async function inspectListing(url, runToken, debug = false) {
+async function inspectListing(url, runToken, debug = false, render = true) {
   assertInspectionActive(runToken);
   const staticStartedAt = Date.now();
   const response = await fetchWithTimeout(url, runToken);
@@ -396,7 +396,7 @@ async function inspectListing(url, runToken, debug = false) {
   let renderedStartedAt = null;
   let renderedCompletedAt = null;
   let renderedError = null;
-  if (listingId) {
+  if (listingId && render) {
     try {
       assertInspectionActive(runToken);
       renderedStartedAt = Date.now();
@@ -486,24 +486,101 @@ async function inspectListing(url, runToken, debug = false) {
     scopeLength: extractionText.length,
     finalUrl: response.url,
     responseLength: html.length,
-    ...(debug ? {
-      inspectionDiagnostics: {
-        staticAttempted: true,
-        staticCompleted: true,
-        staticDurationMs: staticCompletedAt - staticStartedAt,
-        staticOutcome: "completed",
-        renderedAttempted: renderedStartedAt !== null,
-        renderedCompleted: Boolean(renderedListingDetails),
-        renderedDurationMs: renderedStartedAt === null
-          ? 0
-          : (renderedCompletedAt || Date.now()) - renderedStartedAt,
-        renderedOutcome: renderedListingDetails
-          ? "completed"
-          : renderedStartedAt === null ? "not_applicable" : "failed_static_fallback",
-        renderedErrorClass: renderedError?.errorClass || null,
-        renderedErrorMessage: renderedError?.errorMessage || null
-      }
-    } : {}),
+    inspectionDiagnostics: {
+      staticAttempted: true,
+      staticCompleted: true,
+      staticDurationMs: staticCompletedAt - staticStartedAt,
+      staticOutcome: "completed",
+      renderedAttempted: renderedStartedAt !== null,
+      renderedCompleted: Boolean(renderedListingDetails),
+      renderedDurationMs: renderedStartedAt === null
+        ? 0
+        : (renderedCompletedAt || Date.now()) - renderedStartedAt,
+      renderedOutcome: renderedListingDetails
+        ? "completed"
+        : renderedStartedAt === null ? "not_requested" : "failed_static_fallback",
+      renderedErrorClass: renderedError?.errorClass || null,
+      renderedErrorMessage: renderedError?.errorMessage || null
+    },
+    checkedAt: Date.now()
+  };
+}
+
+async function inspectRenderedListingFromStatic(staticResult, url, listingId, runToken, debug = false) {
+  if (!staticResult || typeof staticResult !== "object") {
+    throw new Error("Static listing inspection is required before rendered inspection.");
+  }
+  const canonicalListingId = String(listingId || staticResult.listingId || "");
+  if (!canonicalListingId) return staticResult;
+
+  assertInspectionActive(runToken);
+  const renderedStartedAt = Date.now();
+  let renderedCompletedAt = null;
+  let renderedListingDetails = null;
+  let renderedError = null;
+  let listingDetails = staticResult;
+  try {
+    renderedListingDetails = await queueRenderedInspection(
+      staticResult.finalUrl || url,
+      canonicalListingId,
+      runToken,
+      debug
+    );
+    renderedCompletedAt = Date.now();
+    listingDetails = ListingDetailsExtractor.mergeListingDetails(staticResult, renderedListingDetails);
+  } catch (error) {
+    renderedCompletedAt = Date.now();
+    renderedError = sanitiseInspectionError(error);
+    if (debug) {
+      listingDetails = {
+        ...staticResult,
+        imageDiagnostics: {
+          ...(staticResult.imageDiagnostics || {}),
+          renderedInspectionFailed: true
+        }
+      };
+    }
+  }
+
+  assertInspectionActive(runToken);
+  const renderedCategory = CategoryDetector.detectTrustedEvidence([
+    { text: renderedListingDetails?.fullDescription, source: "facebook-rendered-description" },
+    { text: renderedListingDetails?.listingTitle, source: "facebook-structured-title" },
+    { text: vehicleAttributeEvidence(renderedListingDetails?.vehicleAttributes), source: "facebook-rendered-attributes" }
+  ]);
+  const category = CategoryDetector.combineDetections([staticResult, renderedCategory]);
+  const preliminaryCategory = staticResult.categoryClassificationDiagnostics?.preliminaryCategoryResult ||
+    CategoryDetector.summariseCategoryResult(staticResult);
+
+  return {
+    ...staticResult,
+    ...listingDetails,
+    ...category,
+    listingId: canonicalListingId,
+    listingDetailExtractionSource: listingDetails.extractionSource,
+    categoryClassificationDiagnostics: {
+      preliminaryCategoryResult: preliminaryCategory,
+      finalCategoryResult: CategoryDetector.summariseCategoryResult(category),
+      finalCategoryEvidenceSource: category.source || null,
+      reclassifiedAfterRenderedExtraction: Boolean(
+        !preliminaryCategory.detected &&
+        category.detected &&
+        category.evidence?.some(item =>
+          ["facebook-rendered-description", "facebook-rendered-attributes"].includes(item.source)
+        )
+      ),
+      provisionalStatus: preliminaryCategory.detected ? "rejected" : "matched",
+      finalStatus: category.detected ? "rejected" : "matched"
+    },
+    inspectionDiagnostics: {
+      ...(staticResult.inspectionDiagnostics || {}),
+      renderedAttempted: true,
+      renderedCompleted: Boolean(renderedListingDetails),
+      renderedDurationMs: (renderedCompletedAt || Date.now()) - renderedStartedAt,
+      renderedOutcome: renderedListingDetails ? "completed" : "failed_static_fallback",
+      renderedErrorClass: renderedError?.errorClass || null,
+      renderedErrorMessage: renderedError?.errorMessage || null
+    },
     checkedAt: Date.now()
   };
 }
@@ -534,7 +611,7 @@ function pumpQueue() {
     activeRequests += 1;
     lastRequestStartedAt = Date.now();
 
-    inspectListing(job.url, job.runToken, job.debug)
+    inspectListing(job.url, job.runToken, job.debug, job.mode !== "static")
       .then(result => {
         for (const listener of job.listeners) {
           listener.resolve(result);
@@ -553,13 +630,13 @@ function pumpQueue() {
   }
 }
 
-function queueInspection(url, priority = 0, runToken = null, debug = false) {
+function queueInspection(url, priority = 0, runToken = null, debug = false, mode = "full") {
   return new Promise((resolve, reject) => {
     if (runToken && cancelledInspectionTokens.has(runToken)) {
       reject(new Error("Listing inspection was cancelled."));
       return;
     }
-    const key = `${runToken || "legacy"}:${url}`;
+    const key = `${runToken || "legacy"}:${mode}:${url}`;
     const existing = jobsByUrl.get(key);
 
     if (existing) {
@@ -580,6 +657,7 @@ function queueInspection(url, priority = 0, runToken = null, debug = false) {
       runToken,
       priority,
       debug,
+      mode,
       listeners: [{ resolve, reject }],
       started: false
     };
@@ -906,6 +984,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "INSPECT_LISTING" && message.url) {
     return respond(
       queueInspection(message.url, Number(message.priority) || 0, message.runToken || null, message.debug === true)
+    );
+  }
+
+  if (message?.type === "INSPECT_STATIC_LISTING" && message.url) {
+    return respond(
+      queueInspection(
+        message.url,
+        Number(message.priority) || 0,
+        message.runToken || null,
+        message.debug === true,
+        "static"
+      )
+    );
+  }
+
+  if (message?.type === "INSPECT_RENDERED_LISTING" && message.url && message.staticResult) {
+    return respond(
+      inspectRenderedListingFromStatic(
+        message.staticResult,
+        message.url,
+        message.listingId,
+        message.runToken || null,
+        message.debug === true
+      )
     );
   }
 

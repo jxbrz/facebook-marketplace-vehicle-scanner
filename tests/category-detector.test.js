@@ -49,6 +49,19 @@ test("detects controlled category wording in both directions", () => {
   }
 });
 
+test("classifies reliable generic insurance write-off wording as another category", () => {
+  for (const text of [
+    "Recorded insurance write-off",
+    "Previously written off"
+  ]) {
+    const result = detectCategory(text, { source: "facebook-rendered-description" });
+    assert.equal(result.detected, true, text);
+    assert.equal(result.category, "OTHER", text);
+    assert.equal(result.detectorRule, "generic_insurance_write_off", text);
+  }
+  assert.equal(detectCategory("Not an insurance write-off").detected, false);
+});
+
 test("supports every controlled category-term spelling without fuzzy matching", () => {
   for (const term of CATEGORY_TERMS) {
     assert.equal(detectCategory(`${term} S`).category, "S", term);
@@ -128,4 +141,14 @@ test("trusted evidence aggregation is source-prioritised and bounded", () => {
   assert.equal(diagnostic.detected, true);
   assert.equal(diagnostic.evidence[0].matchedPhrase, "Cat S");
   assert.equal("normalizedText" in diagnostic, false);
+});
+
+test("preserves disputed category wording as explicit ambiguous evidence", () => {
+  const result = detectCategory("The Cat N classification is disputed");
+  assert.equal(result.detected, false);
+  assert.equal(result.ambiguousEvidence.length, 1);
+  const prefixResult = detectCategory("Disputed Cat N classification");
+  assert.equal(prefixResult.detected, false);
+  assert.equal(prefixResult.ambiguousEvidence.length, 1);
+  assert.equal(summariseCategoryResult(prefixResult).ambiguousEvidence.length, 1);
 });

@@ -60,5 +60,38 @@
     return lifecycleState === "running";
   }
 
-  return { classifyPersistedRun, permitsScanningActivity, transition };
+  function createRunCompletionGate() {
+    let completion = null;
+
+    function request(reason, status = "completed", at = Date.now()) {
+      if (completion) return { accepted: false, completion: { ...completion } };
+      completion = {
+        reason: String(reason || "completed"),
+        status: String(status || "completed"),
+        requestedAt: Number(at) || Date.now()
+      };
+      return { accepted: true, completion: { ...completion } };
+    }
+
+    function permitsActivity() {
+      return completion === null;
+    }
+
+    function reset() {
+      completion = null;
+    }
+
+    function snapshot() {
+      return completion ? { ...completion } : null;
+    }
+
+    return { permitsActivity, request, reset, snapshot };
+  }
+
+  return {
+    classifyPersistedRun,
+    createRunCompletionGate,
+    permitsScanningActivity,
+    transition
+  };
 });

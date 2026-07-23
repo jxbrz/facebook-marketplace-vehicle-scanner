@@ -8,10 +8,16 @@
   const LISTING_EVENT_NAMES = new Set([
     "discovered",
     "idExtracted",
+    "cardMetadataStart",
+    "cardMetadataEnd",
     "cheapFilterComplete",
     "queued",
     "processingStart",
     "detailFetchStart",
+    "staticStart",
+    "staticEnd",
+    "renderedStart",
+    "renderedEnd",
     "detailFetchEnd",
     "processingComplete"
   ]);
@@ -37,6 +43,7 @@
     const enabled = options.enabled === true;
     const maxListings = Math.max(1, Number(options.maxListings) || 520);
     const maxScrolls = Math.max(1, Number(options.maxScrolls) || 100);
+    const workerCapacity = Math.max(1, Number(options.workerCapacity) || 1);
     const listings = new Map();
     const scrolls = [];
     const uploads = [];
@@ -44,8 +51,13 @@
       discovered: 0,
       duplicateSkipped: 0,
       retries: 0,
-      timeouts: 0
+      timeouts: 0,
+      renderedAttempts: 0,
+      renderedTimeouts: 0,
+      renderedSkippedStaticReject: 0
     };
+    let targetReachedAt = null;
+    let completedAt = null;
     const gauges = {
       queueSize: 0,
       activeWorkers: 0,
@@ -102,6 +114,16 @@
       if (uploads.length > maxScrolls) uploads.splice(0, uploads.length - maxScrolls);
     }
 
+    function markTargetReached(at = Date.now()) {
+      if (!enabled || targetReachedAt !== null) return;
+      targetReachedAt = Number(at) || Date.now();
+    }
+
+    function markCompleted(at = Date.now()) {
+      if (!enabled || completedAt !== null) return;
+      completedAt = Number(at) || Date.now();
+    }
+
     function snapshot() {
       if (!enabled) return null;
       const records = [...listings.values()];
@@ -114,6 +136,13 @@
         .map(upload => upload.endedAt - upload.startedAt)
         .filter(value => Number.isFinite(value) && value >= 0);
       const duplicateDenominator = counters.discovered + counters.duplicateSkipped;
+      const workerDurations = durationBetween(records, "processingStart", "processingComplete");
+      const workerWindowStart = Math.min(...records.map(record => Number(record.processingStart)).filter(Number.isFinite));
+      const workerWindowEnd = Math.max(...records.map(record => Number(record.processingComplete)).filter(Number.isFinite));
+      const workerWindowMs = Number.isFinite(workerWindowStart) && Number.isFinite(workerWindowEnd)
+        ? Math.max(0, workerWindowEnd - workerWindowStart)
+        : 0;
+      const workerBusyMs = workerDurations.reduce((total, value) => total + value, 0);
 
       return {
         enabled: true,
@@ -121,8 +150,13 @@
         scrollSamples: scrolls.length,
         uploadSamples: uploads.length,
         medianDiscoveryToQueueMs: median(durationBetween(records, "discovered", "queued")),
+        medianCardDiscoveryMs: median(durationBetween(records, "idExtracted", "discovered")),
+        medianCardMetadataExtractionMs: median(durationBetween(records, "cardMetadataStart", "cardMetadataEnd")),
         medianQueueWaitMs: median(durationBetween(records, "queued", "processingStart")),
+        medianStaticExtractionMs: median(durationBetween(records, "staticStart", "staticEnd")),
+        medianRenderedExtractionMs: median(durationBetween(records, "renderedStart", "renderedEnd")),
         medianDetailProcessingMs: median(durationBetween(records, "detailFetchStart", "detailFetchEnd")),
+        medianInspectedListingMs: median(durationBetween(records, "processingStart", "processingComplete")),
         medianUploadMs: median(uploadDurations),
         medianSuccessfulScrollIntervalMs: median(successfulIntervals),
         duplicateRatio: duplicateDenominator
@@ -131,6 +165,15 @@
         cardsPerScroll: scrolls.length
           ? Number((scrolls.reduce((total, scroll) => total + scroll.newCards, 0) / scrolls.length).toFixed(2))
           : 0,
+        workerUtilization: workerWindowMs
+          ? Number(Math.min(1, workerBusyMs / (workerWindowMs * workerCapacity)).toFixed(4))
+          : null,
+        targetCompletionLatencyMs: targetReachedAt === null || completedAt === null
+          ? null
+          : Math.max(0, completedAt - targetReachedAt),
+        postTargetScrollCount: targetReachedAt === null
+          ? 0
+          : scrolls.filter(scroll => scroll.at > targetReachedAt).length,
         counters: { ...counters },
         gauges: { ...gauges },
         lastScroll: scrolls.at(-1) || null
@@ -140,6 +183,8 @@
     return {
       enabled,
       increment,
+      markCompleted,
+      markTargetReached,
       recordListing,
       recordScroll,
       recordUpload,

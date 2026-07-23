@@ -234,3 +234,71 @@ test("final background classification includes the rendered seller description",
   assert.equal(result.source, "facebook-rendered-description");
   assert.equal(result.categoryClassificationDiagnostics.reclassifiedAfterRenderedExtraction, true);
 });
+
+test("static and rendered inspection phases use distinct bounded message paths without refetching", async () => {
+  let fetchCount = 0;
+  const realExtractor = require("../listing-details-extractor.js");
+  const harness = createHarness(
+    async () => ({
+      ok: true,
+      result: {
+        fullDescription: "Rendered seller description",
+        listingTitle: "2018 Volkswagen Polo",
+        vehicleAttributes: {},
+        imageUrls: ["https://scontent-lhr6-1.xx.fbcdn.net/photo.jpg"],
+        extractionSource: "rendered-semantic-dom"
+      }
+    }),
+    {
+      CategoryDetector: require("../category-detector.js"),
+      ListingDetailsExtractor: {
+        extractListingDetails() {
+          return {
+            fullDescription: null,
+            listingTitle: "2018 Volkswagen Polo",
+            vehicleAttributes: {},
+            imageUrls: [],
+            extractionSource: "embedded-json",
+            structuredDetailsFound: true
+          };
+        },
+        mergeListingDetails: realExtractor.mergeListingDetails
+      },
+      fetch: async url => {
+        fetchCount += 1;
+        return {
+          ok: true,
+          url,
+          async text() {
+            return "<html><body>Marketplace listing 123 Volkswagen Polo</body></html>";
+          }
+        };
+      }
+    }
+  );
+
+  const url = "https://www.facebook.com/marketplace/item/123/";
+  const staticResult = await harness.context.inspectListing(url, "run-1", false, false);
+  assert.equal(fetchCount, 1);
+  assert.equal(harness.created.length, 0);
+  assert.equal(staticResult.inspectionDiagnostics.renderedOutcome, "not_requested");
+
+  const renderedResult = await harness.context.inspectRenderedListingFromStatic(
+    staticResult,
+    url,
+    "123",
+    "run-1"
+  );
+  assert.equal(fetchCount, 1);
+  assert.equal(harness.created.length, 1);
+  assert.equal(renderedResult.fullDescription, "Rendered seller description");
+  assert.equal(renderedResult.inspectionDiagnostics.renderedCompleted, true);
+});
+
+test("runtime exposes static-first and rendered-only inspection messages", () => {
+  const source = fs.readFileSync("background.js", "utf8");
+  assert.match(source, /message\?\.type === "INSPECT_STATIC_LISTING"/);
+  assert.match(source, /queueInspection\([\s\S]*"static"/);
+  assert.match(source, /message\?\.type === "INSPECT_RENDERED_LISTING"/);
+  assert.match(source, /inspectRenderedListingFromStatic/);
+});

@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.2.3";
+const EXTENSION_VERSION = "23.2.4";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -102,6 +102,7 @@ let panelElements = null;
 let observerConnected = false;
 let lifecycleDiagnostics = [];
 let performanceDiagnostics = ScannerDiagnostics.create();
+const completionGate = ScannerLifecycle.createRunCompletionGate();
 let storageHealth = {
   estimatedBytes: 0,
   softLimitBytes: ScannerStorage.SOFT_LIMIT_BYTES,
@@ -124,7 +125,8 @@ function resetPerformanceDiagnostics() {
   performanceDiagnostics = ScannerDiagnostics.create({
     enabled: settings.scannerDebugDiagnostics === true,
     maxListings: 520,
-    maxScrolls: 100
+    maxScrolls: 100,
+    workerCapacity: CONFIG.listingProcessingConcurrency
   });
   debugSummaryLastLoggedAt = 0;
 }
@@ -362,7 +364,20 @@ function recordLifecycleDiagnostic(event, details = {}) {
 }
 
 function scanIsRunning() {
-  return scanningActive && ScannerLifecycle.permitsScanningActivity(lifecycleState);
+  return (
+    completionGate.permitsActivity() &&
+    scanningActive &&
+    ScannerLifecycle.permitsScanningActivity(lifecycleState)
+  );
+}
+
+function runActivityAllowed(generation = scanGeneration) {
+  return (
+    generation === scanGeneration &&
+    scanIsRunning() &&
+    !scanFinalised &&
+    !finalising
+  );
 }
 
 function waitForScanDelay(milliseconds) {
@@ -642,13 +657,21 @@ function vehicleAttribute(result, labels) {
   return null;
 }
 
+function categoryEvidenceState(result) {
+  if (result?.detected === true) return "confirmed_category";
+  if (Array.isArray(result?.ambiguousEvidence) && result.ambiguousEvidence.length) {
+    return "explicitly_unknown";
+  }
+  return "no_category_evidence";
+}
+
 function buildCanonicalFacts(metadata = {}, result = null, options = {}) {
   const detailAvailable = options.detailCompleted === undefined
     ? Boolean(result)
     : options.detailCompleted === true;
   const category = result?.detected && ["S", "N", "C", "D"].includes(result.category)
     ? `cat_${result.category.toLowerCase()}`
-    : null;
+    : result?.detected && result.category === "OTHER" ? "other" : null;
   return ListingFacts.normaliseListingFacts({
     listingId: result?.listingId || metadata.listingId,
     listingUrl: result?.finalUrl || metadata.url,
@@ -665,6 +688,7 @@ function buildCanonicalFacts(metadata = {}, result = null, options = {}) {
     colour: vehicleAttribute(result, ["colour", "color", "primary colour"]),
     bodyType: vehicleAttribute(result, ["body type", "body style", "vehicle type"]),
     categoryStatus: category,
+    categoryEvidenceState: categoryEvidenceState(result),
     categoryDetected: Boolean(category),
     categoryEvidence: result?.match,
     sellerType: result?.sellerType || metadata.sellerType,
@@ -802,7 +826,6 @@ function markFinal(listingId, status, options = {}) {
   updateProgress();
   schedulePersist();
   scheduleRemoteProgressSync();
-  evaluateAndFinaliseIfNeeded();
   recordDiagnosticStage(listingId, "terminal", {
     decision: status,
     outcome: options.code || status,
@@ -813,6 +836,13 @@ function markFinal(listingId, status, options = {}) {
     finalizationStage: entry.finalizationStage,
     finalizationReasonCodes: entry.finalizationReasonCodes
   });
+  if (status === "matched" && countStates().matched >= settings.targetMatches) {
+    requestRunCompletion("target_reached", "completed").catch(error => {
+      console.error("Marketplace Vehicle Scanner target completion failed:", error);
+    });
+  } else {
+    evaluateAndFinaliseIfNeeded();
+  }
   return entry;
 }
 
@@ -1032,7 +1062,7 @@ function evaluateAndFinaliseIfNeeded() {
   const condition = getTerminalCondition();
 
   if (condition) {
-    finaliseScan(condition.status, condition.reason).catch(error => {
+    requestRunCompletion(condition.reason, condition.status).catch(error => {
       console.error("Marketplace Vehicle Scanner finalisation failed:", error);
     });
     return true;
@@ -1042,6 +1072,7 @@ function evaluateAndFinaliseIfNeeded() {
 }
 
 function collectCards() {
+  if (!runActivityAllowed()) return [];
   for (const [listingId, card] of cardByListingId.entries()) {
     if (!card?.isConnected) {
       cardByListingId.delete(listingId);
@@ -1066,9 +1097,10 @@ function collectCards() {
     const listing = normaliseListingUrl(anchor.href);
 
     if (!listing || unique.has(listing.id)) continue;
-    performanceDiagnostics.recordListing(listing.id, "idExtracted");
+    const existingEntry = getLedgerEntry(listing.id);
+    if (!existingEntry) performanceDiagnostics.recordListing(listing.id, "idExtracted");
 
-    if (!ledgerByListingId.has(listing.id) && ledgerByListingId.size >= discoveryCeiling) {
+    if (!existingEntry && ledgerByListingId.size >= discoveryCeiling) {
       continue;
     }
 
@@ -1078,8 +1110,15 @@ function collectCards() {
     const rect = card.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
 
-    const metadata = extractCardMetadata(card, listing.id, anchor);
-    markDiscovered(listing, metadata);
+    let metadata = existingEntry?.metadata || null;
+    if (!metadata) {
+      performanceDiagnostics.recordListing(listing.id, "cardMetadataStart");
+      metadata = extractCardMetadata(card, listing.id, anchor);
+      performanceDiagnostics.recordListing(listing.id, "cardMetadataEnd");
+      markDiscovered(listing, metadata);
+    } else {
+      performanceDiagnostics.increment("duplicateSkipped");
+    }
     cardByListingId.set(listing.id, card);
 
     unique.set(listing.id, {
@@ -1144,6 +1183,27 @@ async function inspectListing(url, priority) {
     type: "INSPECT_LISTING",
     url,
     priority,
+    runToken,
+    debug: settings.scannerDebugDiagnostics === true
+  });
+}
+
+async function inspectStaticListing(url, priority) {
+  return sendBackground({
+    type: "INSPECT_STATIC_LISTING",
+    url,
+    priority,
+    runToken,
+    debug: settings.scannerDebugDiagnostics === true
+  });
+}
+
+async function inspectRenderedListing(url, listingId, staticResult) {
+  return sendBackground({
+    type: "INSPECT_RENDERED_LISTING",
+    url,
+    listingId,
+    staticResult,
     runToken,
     debug: settings.scannerDebugDiagnostics === true
   });
@@ -1233,6 +1293,16 @@ function buildRemoteListing(entry, result = null) {
         diagnosticReason: item.diagnosticReason
       }))
     : [];
+  const ambiguousCategoryEvidence = Array.isArray(result?.ambiguousEvidence)
+    ? result.ambiguousEvidence.slice(0, 10).map(item => ({
+        category: item.category,
+        matchedPhrase: truncate(item.matchedPhrase, 120),
+        source: item.source,
+        detectorRule: item.detectorRule,
+        disposition: item.disposition,
+        diagnosticReason: item.diagnosticReason
+      }))
+    : [];
 
   return {
     externalListingId: entry.listingId,
@@ -1283,6 +1353,7 @@ function buildRemoteListing(entry, result = null) {
       categoryDetectorRule: result?.detectorRule || null,
       categoryEvidence,
       negatedCategoryEvidence,
+      ambiguousCategoryEvidence,
       detectedCategories: result?.detectedCategories || [],
       conflictingCategories: Boolean(result?.conflictingCategories),
       negationEvaluated: Boolean(result?.negationEvaluated),
@@ -1297,12 +1368,14 @@ function buildRemoteListing(entry, result = null) {
         colour: facts.colour,
         bodyType: facts.bodyType,
         categoryStatus: facts.categoryStatus,
+        categoryEvidenceState: facts.categoryEvidenceState,
         unknownFields: facts.unknownFields,
         sources: facts.sources,
         confidence: facts.confidence
       },
       filterEvaluation: result?.filterEvaluation ? {
         decision: result.filterEvaluation.decision,
+        categoryAssessment: result.filterEvaluation.categoryAssessment,
         rejectionReasons: result.filterEvaluation.rejectionReasons,
         unresolvedReasons: result.filterEvaluation.unresolvedReasons,
         warnings: result.filterEvaluation.warnings,
@@ -1694,33 +1767,87 @@ function ensureProcessingQueue() {
 async function processListing(entry, generation) {
   const { listing, metadata, priority } = entry;
 
-  if (!scanIsRunning() || generation !== scanGeneration) return;
+  if (!runActivityAllowed(generation)) return;
 
   performanceDiagnostics.recordListing(listing.id, "detailFetchStart");
+  performanceDiagnostics.recordListing(listing.id, "staticStart");
   recordFilterDiagnostic(listing.id, { detailExtractionAttempted: true, detailExtractionOutcome: "started" });
   recordDiagnosticStage(listing.id, "static_extraction_started", {
     staticAttempted: true
   });
-  let result;
+  let staticResult;
   try {
-    result = normaliseFreshFacebookUkMileage(
-      await inspectListing(listing.url, priority)
+    staticResult = normaliseFreshFacebookUkMileage(
+      await inspectStaticListing(listing.url, priority)
     );
   } finally {
-    performanceDiagnostics.recordListing(listing.id, "detailFetchEnd");
+    performanceDiagnostics.recordListing(listing.id, "staticEnd");
   }
 
-  if (!scanIsRunning() || generation !== scanGeneration) return;
+  if (!runActivityAllowed(generation)) return;
 
-  maybeLogImageExtractionDiagnostics(listing.id, result, metadata);
-  recordFilterDiagnostic(listing.id, { detailExtractionOutcome: "completed" });
-  const inspection = result?.inspectionDiagnostics || {};
+  const staticInspection = staticResult?.inspectionDiagnostics || {};
   recordDiagnosticStage(listing.id, "static_extraction_completed", {
-    staticAttempted: inspection.staticAttempted === true,
-    staticCompleted: inspection.staticCompleted === true,
-    durationMs: inspection.staticDurationMs,
-    outcome: inspection.staticOutcome || "completed"
+    staticAttempted: staticInspection.staticAttempted === true,
+    staticCompleted: staticInspection.staticCompleted === true,
+    durationMs: staticInspection.staticDurationMs,
+    outcome: staticInspection.staticOutcome || "completed"
   });
+
+  const staticCombinedResult = enrichVehicleIdentity(
+    metadata,
+    combineCategoryResult(metadata, staticResult),
+    true
+  );
+  const staticEvaluation = evaluateFilters(metadata, staticCombinedResult, { phase: "final" });
+  const staticFinalization = ScannerDecisionPolicy.staticDetailFinalizationDecision(staticEvaluation);
+  let result = staticResult;
+
+  if (staticFinalization.mayFinalize) {
+    performanceDiagnostics.increment("renderedSkippedStaticReject");
+    result = {
+      ...staticResult,
+      inspectionDiagnostics: {
+        ...staticInspection,
+        renderedAttempted: false,
+        renderedCompleted: false,
+        renderedDurationMs: 0,
+        renderedOutcome: "skipped_static_rejection",
+        renderedErrorClass: null,
+        renderedErrorMessage: null
+      }
+    };
+    recordDiagnosticStage(listing.id, "rendered_extraction_completed", {
+      renderedAttempted: false,
+      renderedCompleted: false,
+      durationMs: 0,
+      outcome: "skipped_static_rejection"
+    });
+  } else {
+    performanceDiagnostics.increment("renderedAttempts");
+    performanceDiagnostics.recordListing(listing.id, "renderedStart");
+    recordDiagnosticStage(listing.id, "rendered_extraction_started", {
+      renderedAttempted: true
+    });
+    try {
+      result = normaliseFreshFacebookUkMileage(
+        await inspectRenderedListing(listing.url, listing.id, staticResult)
+      );
+    } finally {
+      performanceDiagnostics.recordListing(listing.id, "renderedEnd");
+    }
+  }
+
+  if (!runActivityAllowed(generation)) return;
+
+  const inspection = result?.inspectionDiagnostics || staticInspection;
+  if (
+    inspection.renderedAttempted === true &&
+    inspection.renderedCompleted !== true &&
+    /timed out|timeout/i.test(`${inspection.renderedErrorClass || ""} ${inspection.renderedErrorMessage || ""}`)
+  ) {
+    performanceDiagnostics.increment("renderedTimeouts");
+  }
   recordDiagnosticStage(listing.id, "rendered_extraction_completed", {
     renderedAttempted: inspection.renderedAttempted === true,
     renderedCompleted: inspection.renderedCompleted === true,
@@ -1729,19 +1856,24 @@ async function processListing(entry, generation) {
     errorClass: inspection.renderedErrorClass,
     errorMessage: inspection.renderedErrorMessage
   });
+  performanceDiagnostics.recordListing(listing.id, "detailFetchEnd");
 
   upsertLedgerEntry(listing.id, {
     detailInspectionAttempted: true,
-    staticInspectionCompleted: inspection.staticCompleted === true,
+    staticInspectionCompleted: staticInspection.staticCompleted === true,
     renderedInspectionCompleted: inspection.renderedCompleted === true
   });
 
+  maybeLogImageExtractionDiagnostics(listing.id, result, metadata);
+  recordFilterDiagnostic(listing.id, { detailExtractionOutcome: "completed" });
   await saveCachedResult(listing.id, result);
+  if (!runActivityAllowed(generation)) return;
   classifyListing(listing.id, metadata, result, "facebook-listing-page");
 }
 
 async function scanPage() {
-  if (!settings.enabled || !scanIsRunning() || finalising || scanFinalised) return;
+  const generation = scanGeneration;
+  if (!settings.enabled || !runActivityAllowed(generation)) return;
   if (!isMarketplaceSearchRoute()) return;
 
   if (sourceSearchRouteKey && getRouteKey() !== sourceSearchRouteKey) {
@@ -1758,9 +1890,10 @@ async function scanPage() {
     .map(entry => entry.listing.id)
     .filter(id => !resultByListingId.has(id));
   const cachedResults = await loadCachedResults(cacheIds);
+  if (!runActivityAllowed(generation)) return;
 
   for (const entry of entries) {
-    if (!scanIsRunning() || scanFinalised || finalising) break;
+    if (!runActivityAllowed(generation)) break;
     if (evaluateAndFinaliseIfNeeded()) break;
 
     const counts = countStates();
@@ -1840,7 +1973,7 @@ async function scanPage() {
 
     ensureProcessingQueue().enqueue({
       entry,
-      generation: scanGeneration
+      generation
     });
   }
 
@@ -1849,9 +1982,11 @@ async function scanPage() {
 }
 
 function scheduleScan(delay = CONFIG.scanDebounceMs) {
-  if (!scanIsRunning()) return;
+  if (!runActivityAllowed()) return;
+  const generation = scanGeneration;
   clearTimeout(scanTimer);
   scanTimer = setTimeout(() => {
+    if (!runActivityAllowed(generation)) return;
     scanPage().catch(error => {
       console.error("Marketplace Vehicle Scanner scan pass failed:", error);
     });
@@ -1962,12 +2097,23 @@ function waitForListingGrowth(
   container,
   previousHeight,
   previousMutationVersion,
-  timeoutMs = CONFIG.growthTimeoutMs
+  timeoutMs = CONFIG.growthTimeoutMs,
+  generation = scanGeneration
 ) {
   return new Promise(resolve => {
     const startedAt = Date.now();
 
     const check = () => {
+      if (!runActivityAllowed(generation)) {
+        resolve({
+          grew: false,
+          mutated: false,
+          targetReplaced: false,
+          count: ledgerByListingId.size,
+          height: getScrollMetrics(container).height
+        });
+        return;
+      }
       collectCards();
       const currentCount = ledgerByListingId.size;
       const targetReplaced =
@@ -1986,7 +2132,7 @@ function waitForListingGrowth(
         return;
       }
 
-      if (!scanIsRunning() || Date.now() - startedAt >= timeoutMs) {
+      if (!runActivityAllowed(generation) || Date.now() - startedAt >= timeoutMs) {
         resolve({
           grew: false,
           mutated: false,
@@ -2019,8 +2165,9 @@ function waitForAnimationFrame(timeoutMs = 120) {
 }
 
 async function autoLoadListings() {
-  if (!settings.autoLoadEnabled || autoLoadingActive || !scanIsRunning()) return;
+  if (!settings.autoLoadEnabled || autoLoadingActive || !runActivityAllowed()) return;
 
+  const generation = scanGeneration;
   autoLoadingActive = true;
   autoLoadStopRequested = false;
   scrollState = "discovering";
@@ -2029,13 +2176,12 @@ async function autoLoadListings() {
   updateProgress();
 
   while (
-    scanIsRunning() &&
-    !scanFinalised &&
-    !finalising &&
+    runActivityAllowed(generation) &&
     !autoLoadStopRequested
   ) {
     if (isListingRoute()) {
       await waitForScanDelay(500);
+      if (!runActivityAllowed(generation)) break;
       continue;
     }
 
@@ -2044,7 +2190,7 @@ async function autoLoadListings() {
     scrollState = "discovering";
     await scanPage();
 
-    if (!scanIsRunning() || evaluateAndFinaliseIfNeeded()) break;
+    if (!runActivityAllowed(generation) || evaluateAndFinaliseIfNeeded()) break;
 
     const container = findResultsScrollContainer();
     const before = getScrollMetrics(container);
@@ -2054,20 +2200,25 @@ async function autoLoadListings() {
     let nudgedAtBottom = false;
     const mutationVersionBeforeScroll = domMutationVersion;
     const scrollAttemptedAt = Date.now();
+    if (!runActivityAllowed(generation)) break;
     scrollState = "scrolling";
 
     if (before.max - before.top < 50) {
       nudgedAtBottom = true;
+      if (!runActivityAllowed(generation)) break;
       setScrollTop(
         container,
         Math.max(0, before.top - Math.round(before.client * 0.18))
       );
       await waitForScanDelay(220);
+      if (!runActivityAllowed(generation)) break;
       nextTop = getScrollMetrics(container).max;
     }
 
+    if (!runActivityAllowed(generation)) break;
     setScrollTop(container, nextTop);
     await waitForAnimationFrame();
+    if (!runActivityAllowed(generation)) break;
 
     scrollState = "waiting_for_growth";
     const growth = await waitForListingGrowth(
@@ -2075,9 +2226,12 @@ async function autoLoadListings() {
       container,
       before.height,
       mutationVersionBeforeScroll,
-      Math.max(CONFIG.growthTimeoutMs, CONFIG.autoLoadPauseMs * 3)
+      Math.max(CONFIG.growthTimeoutMs, CONFIG.autoLoadPauseMs * 3),
+      generation
     );
+    if (!runActivityAllowed(generation)) break;
     await scanPage();
+    if (!runActivityAllowed(generation)) break;
 
     const after = getScrollMetrics(container);
     const atBottom = after.max - after.top < 70;
@@ -2106,7 +2260,7 @@ async function autoLoadListings() {
     if (endState.complete) {
       const counts = countStates();
       if (counts.pending === 0) {
-        await finaliseScan("completed", "no_more_results");
+        await requestRunCompletion("no_more_results", "completed");
         break;
       }
       scrollState = "processing";
@@ -2115,10 +2269,17 @@ async function autoLoadListings() {
     updateProgress();
     schedulePersist();
     await waitForScanDelay(CONFIG.autoLoadPauseMs);
+    if (!runActivityAllowed(generation)) break;
   }
 
-  autoLoadingActive = false;
-  if (scrollState !== "paused" && scrollState !== "complete" && scrollState !== "error") {
+  if (generation === scanGeneration) autoLoadingActive = false;
+  if (
+    generation === scanGeneration &&
+    completionGate.permitsActivity() &&
+    scrollState !== "paused" &&
+    scrollState !== "complete" &&
+    scrollState !== "error"
+  ) {
     scrollState = "idle";
   }
   recordLifecycleDiagnostic("auto_scroll_stopped");
@@ -2293,10 +2454,16 @@ async function finaliseRemoteIfReady(options = {}) {
 }
 
 async function finaliseScan(status, reason) {
-  if (finalising || scanFinalised) {
+  return requestRunCompletion(reason, status);
+}
+
+async function requestRunCompletion(reason, status = "completed") {
+  const gateResult = completionGate.request(reason, status);
+  if (!gateResult.accepted || finalising || scanFinalised) {
     return finaliseRemoteIfReady();
   }
 
+  if (reason === "target_reached") performanceDiagnostics.markTargetReached();
   finalising = true;
   lifecycleState = ScannerLifecycle.transition(lifecycleState, "STOP");
   recordLifecycleDiagnostic("completion_started", { status, reason });
@@ -2313,6 +2480,7 @@ async function finaliseScan(status, reason) {
       ? ScannerLifecycle.transition(lifecycleState, "STOPPED")
       : ScannerLifecycle.transition(lifecycleState, "COMPLETE");
   historicalScanStatus = status;
+  performanceDiagnostics.markCompleted();
   finalising = false;
   clearTimeout(uploadTimer);
   uploadTimer = null;
@@ -2433,6 +2601,7 @@ function buildScanCreatePayload() {
 
 function resetRunMemory() {
   stopScanningActivity("reset");
+  completionGate.reset();
   clearTimeout(scanTimer);
   clearTimeout(uploadTimer);
   clearTimeout(progressTimer);
@@ -3308,13 +3477,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 const observer = new MutationObserver(mutations => {
-  if (!scanIsRunning() || isListingRoute()) return;
+  if (!runActivityAllowed() || isListingRoute()) return;
 
   if (mutations.every(isExtensionMutation)) return;
+  const generation = scanGeneration;
   domMutationVersion += 1;
 
   clearTimeout(observerTimer);
   observerTimer = setTimeout(() => {
+    if (!runActivityAllowed(generation)) return;
     currentRouteKey = getRouteKey();
     scheduleScan(0);
   }, CONFIG.scanDebounceMs);
@@ -3326,16 +3497,20 @@ async function initialiseScanner() {
   if (controlledDetailTab) return;
 
   window.addEventListener("scroll", () => {
-    if (!scanIsRunning() || isListingRoute()) return;
+    if (!runActivityAllowed() || isListingRoute()) return;
 
+    const generation = scanGeneration;
     clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(() => scheduleScan(0), CONFIG.scanDebounceMs);
+    scrollTimer = setTimeout(() => {
+      if (!runActivityAllowed(generation)) return;
+      scheduleScan(0);
+    }, CONFIG.scanDebounceMs);
   }, { passive: true });
 
   window.addEventListener("popstate", () => {
     currentRouteKey = getRouteKey();
 
-    if (scanIsRunning() && sourceSearchRouteKey === currentRouteKey) {
+    if (runActivityAllowed() && sourceSearchRouteKey === currentRouteKey) {
       scheduleScan(100);
     }
   });

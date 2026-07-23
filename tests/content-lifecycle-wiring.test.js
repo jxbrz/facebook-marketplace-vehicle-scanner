@@ -17,8 +17,8 @@ test("startup restores state without connecting discovery or auto-resuming", () 
   const startup = functionSource("initialiseScanner", "initialiseScanner().catch");
   assert.doesNotMatch(startup, /observer\.observe/);
   assert.doesNotMatch(startup, /autoLoadListings\(/);
-  assert.match(startup, /if \(!scanIsRunning\(\) \|\| isListingRoute\(\)\) return/);
-  assert.match(startup, /if \(scanIsRunning\(\) && sourceSearchRouteKey === currentRouteKey\)/);
+  assert.match(startup, /if \(!runActivityAllowed\(\) \|\| isListingRoute\(\)\) return/);
+  assert.match(startup, /if \(runActivityAllowed\(\) && sourceSearchRouteKey === currentRouteKey\)/);
 
   const restore = functionSource("restoreActiveRun", "async function clearLocalScannerState");
   assert.doesNotMatch(restore, /activateRunningScan\(/);
@@ -48,7 +48,8 @@ test("terminal cleanup disconnects discovery and cancels run-scoped inspections"
   ]) {
     assert.ok(cleanup.includes(expected), `${expected} cleanup was missing`);
   }
-  const finalise = functionSource("finaliseScan", "function rebuildPendingUploadsFromLedger");
+  const finalise = functionSource("requestRunCompletion", "function isMissingRemoteScanError");
+  assert.match(finalise, /completionGate\.request\(reason, status\)/);
   assert.match(finalise, /stopScanningActivity\(reason\)/);
 });
 
@@ -71,7 +72,7 @@ test("only freshly inspected Facebook UK mileage receives the label correction",
   assert.match(normaliser, /market: "GB"/);
 
   const processing = functionSource("processListing", "async function scanPage");
-  assert.match(processing, /normaliseFreshFacebookUkMileage\([\s\S]*await inspectListing/);
+  assert.match(processing, /normaliseFreshFacebookUkMileage\([\s\S]*await inspectStaticListing/);
 
   const restore = functionSource("restoreActiveRun", "async function clearLocalScannerState");
   assert.doesNotMatch(restore, /normaliseFreshFacebookUkMileage/);
@@ -143,6 +144,13 @@ test("cheap filters and cached results run before bounded detail queueing", () =
   assert.match(source, /listingProcessingConcurrency: 3/);
 });
 
+test("already discovered cards reuse canonical metadata instead of extracting it again", () => {
+  const collect = functionSource("collectCards", "function collectScannableEntries");
+  assert.match(collect, /const existingEntry = getLedgerEntry\(listing\.id\)/);
+  assert.match(collect, /let metadata = existingEntry\?\.metadata \|\| null/);
+  assert.match(collect, /if \(!metadata\) \{[\s\S]*extractCardMetadata/);
+});
+
 test("card finalization and upload have independent defensive guards", () => {
   const finalization = functionSource("markFinal", "function classifyListing");
   assert.match(finalization, /cardFinalizationDecision\(evaluation\)/);
@@ -163,7 +171,7 @@ test("normal runtime records detail completion and finalization provenance", () 
   for (const field of ["detailInspectionAttempted", "staticInspectionCompleted", "renderedInspectionCompleted"]) {
     assert.match(source, new RegExp(field));
   }
-  assert.match(process, /inspection\.staticCompleted === true/);
+  assert.match(process, /staticInspection\.staticCompleted === true/);
   assert.match(process, /inspection\.renderedCompleted === true/);
   assert.match(source, /finalizationStage: "card"/);
   assert.match(source, /finalizationStage: "detail_unavailable"/);
@@ -290,4 +298,39 @@ test("DOM mutations trigger immediate discovery and final IDs never requeue", ()
   const scan = functionSource("scanPage", "function scheduleScan");
   assert.match(scan, /existing && isFinalStatus\(existing\.status\)\) continue/);
   assert.match(scan, /queuedListingIds\.has\(listing\.id\)/);
+});
+
+test("target completion closes every discovery and scrolling admission point", () => {
+  const finalization = functionSource("markFinal", "function classifyListing");
+  assert.match(finalization, /status === "matched"/);
+  assert.match(finalization, /countStates\(\)\.matched >= settings\.targetMatches/);
+  assert.match(finalization, /requestRunCompletion\("target_reached", "completed"\)/);
+
+  const autoLoad = functionSource("autoLoadListings", "function cancelOutstandingLedgerWork");
+  assert.ok(
+    [...autoLoad.matchAll(/runActivityAllowed\(generation\)/g)].length >= 8,
+    "auto-load must recheck the completion gate around async waits and scrolling"
+  );
+  assert.match(autoLoad, /if \(!runActivityAllowed\(generation\)\) break;\s*setScrollTop\(container, nextTop\)/);
+
+  const scan = functionSource("scanPage", "function scheduleScan");
+  assert.match(scan, /if \(!runActivityAllowed\(generation\)\) return/);
+  assert.match(scan, /if \(!runActivityAllowed\(generation\)\) break/);
+
+  const observer = source.slice(source.indexOf("const observer = new MutationObserver"));
+  assert.match(observer, /if \(!runActivityAllowed\(\) \|\| isListingRoute\(\)\) return/);
+  assert.match(observer, /if \(!runActivityAllowed\(generation\)\) return/);
+});
+
+test("static-first inspection renders only when final detail evidence remains insufficient", () => {
+  const process = functionSource("processListing", "async function scanPage");
+  assert.ok(process.indexOf("await inspectStaticListing") < process.indexOf("staticDetailFinalizationDecision"));
+  assert.ok(process.indexOf("staticDetailFinalizationDecision") < process.indexOf("await inspectRenderedListing"));
+  assert.match(process, /if \(staticFinalization\.mayFinalize\)/);
+  assert.match(process, /renderedSkippedStaticReject/);
+  assert.match(process, /outcome: "skipped_static_rejection"/);
+  assert.match(process, /await inspectRenderedListing\(listing\.url, listing\.id, staticResult\)/);
+
+  const upload = functionSource("queueRemoteListing", "async function pruneUploadedListings");
+  assert.doesNotMatch(upload, /await/);
 });

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   classifyPersistedRun,
+  createRunCompletionGate,
   permitsScanningActivity,
   transition
 } = require("../scanner-lifecycle.js");
@@ -100,4 +101,40 @@ test("Pause is non-terminal, persists safely, and requires explicit Resume", () 
   }));
   assert.equal(startup.lifecycleState, "paused");
   assert.equal(startup.allowSyncRecovery, false);
+});
+
+test("target completion is immediate and idempotent", () => {
+  const gate = createRunCompletionGate();
+  const first = gate.request("target_reached", "completed", 1000);
+  const stale = gate.request("user_paused", "paused", 1100);
+  assert.equal(first.accepted, true);
+  assert.equal(stale.accepted, false);
+  assert.equal(gate.permitsActivity(), false);
+  assert.deepEqual(gate.snapshot(), {
+    reason: "target_reached",
+    status: "completed",
+    requestedAt: 1000
+  });
+});
+
+test("pending scroll, mutation and worker replacement callbacks stay inert after target", () => {
+  const gate = createRunCompletionGate();
+  const actions = [];
+  const delayedScroll = () => gate.permitsActivity() && actions.push("scroll");
+  const delayedMutation = () => gate.permitsActivity() && actions.push("discover");
+  const workerReplacement = () => gate.permitsActivity() && actions.push("queue");
+
+  gate.request("target_reached");
+  delayedScroll();
+  delayedMutation();
+  workerReplacement();
+  assert.deepEqual(actions, []);
+});
+
+test("pause and resume remain available before terminal completion", () => {
+  const gate = createRunCompletionGate();
+  assert.equal(gate.permitsActivity(), true);
+  assert.equal(transition("running", "PAUSE"), "paused");
+  assert.equal(gate.permitsActivity(), true);
+  assert.equal(transition("paused", "RESUME"), "running");
 });
