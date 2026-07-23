@@ -73,6 +73,18 @@
     return eligible[0];
   }
 
+  function discoveryLimitState(counts, maximumListings) {
+    const limit = Math.max(1, Math.trunc(Number(maximumListings) || 1));
+    const discovered = Math.max(0, Math.trunc(Number(counts?.discovered) || 0));
+    const pending = Math.max(0, Math.trunc(Number(counts?.pending) || 0));
+    const reached = discovered >= limit;
+    return {
+      reached,
+      draining: reached && pending > 0,
+      complete: reached && pending === 0
+    };
+  }
+
   function nextEndDetectionState(current, observation, limits = {}) {
     const state = {
       stalls: Math.max(0, Number(current?.stalls) || 0),
@@ -202,6 +214,7 @@
     WORK_STATES,
     chooseScrollCandidate,
     createBoundedQueue,
+    discoveryLimitState,
     mergeScannableEntries,
     nextEndDetectionState,
     normaliseListingUrl

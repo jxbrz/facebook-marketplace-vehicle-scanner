@@ -190,7 +190,7 @@
     for (const [minimumLabel, minimum, maximumLabel, maximum] of pairs) {
       if (minimum !== null && maximum !== null && minimum > maximum) errors.push(`${minimumLabel} cannot exceed ${maximumLabel.toLowerCase()}.`);
     }
-    if (config.scan.maximumProcessed < config.scan.targetMatches) errors.push("Maximum listings inspected must be at least target matches.");
+    if (config.scan.maximumProcessed < config.scan.targetMatches) errors.push("Maximum listings found must be at least target matches.");
     if (config.category.mode === "selected" && !config.category.statuses.length) errors.push("Select at least one category status.");
     return { valid: errors.length === 0, errors, config };
   }
@@ -406,7 +406,7 @@
       { label: "Body", value: selectionSummary(config.specification.bodyTypes) },
       { label: "Category", value: category },
       { label: "Advanced", value: config.advancedFiltersEnabled ? "Active" : "Off" },
-      { label: "Scan", value: `${config.scan.targetMatches} matches · ${config.scan.maximumProcessed} max · ${Math.round(config.scan.maximumDurationSeconds / 60)} min` }
+      { label: "Scan", value: `${config.scan.targetMatches} match goal · ${config.scan.maximumProcessed} found max · ${Math.round(config.scan.maximumDurationSeconds / 60)} min` }
     ];
   }
 

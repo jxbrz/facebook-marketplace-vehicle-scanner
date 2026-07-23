@@ -1,4 +1,4 @@
-const EXTENSION_VERSION = "23.2.4";
+const EXTENSION_VERSION = "23.2.5";
 
 const CONFIG = {
   maxListingsPerDomPass: 160,
@@ -837,12 +837,9 @@ function markFinal(listingId, status, options = {}) {
     finalizationReasonCodes: entry.finalizationReasonCodes
   });
   if (status === "matched" && countStates().matched >= settings.targetMatches) {
-    requestRunCompletion("target_reached", "completed").catch(error => {
-      console.error("Marketplace Vehicle Scanner target completion failed:", error);
-    });
-  } else {
-    evaluateAndFinaliseIfNeeded();
+    performanceDiagnostics.markTargetReached();
   }
+  evaluateAndFinaliseIfNeeded();
   return entry;
 }
 
@@ -991,7 +988,8 @@ function getRuntimeProgress() {
     maximumDurationSeconds: settings.maximumDurationSeconds,
     elapsedSeconds: getElapsedSeconds(),
     targetReached: counts.matched >= settings.targetMatches,
-    processedLimitReached: counts.processed >= settings.maximumProcessed,
+    listingLimitReached: counts.discovered >= settings.maximumProcessed,
+    processedLimitReached: counts.discovered >= settings.maximumProcessed,
     durationLimitReached: Boolean(
       scanDeadlineAt && Date.now() >= scanDeadlineAt
     ),
@@ -1043,11 +1041,11 @@ function getTerminalCondition() {
 
   const counts = countStates();
 
-  if (counts.matched >= settings.targetMatches) {
-    return { status: "completed", reason: "target_reached" };
-  }
-
-  if (counts.processed >= settings.maximumProcessed) {
+  const discoveryLimit = ScannerRuntime.discoveryLimitState(
+    counts,
+    settings.maximumProcessed
+  );
+  if (discoveryLimit.complete) {
     return { status: "limit_reached", reason: "processed_limit_reached" };
   }
 
@@ -1086,10 +1084,7 @@ function collectCards() {
   ];
   const unique = new Map();
 
-  const discoveryCeiling = Math.min(
-    520,
-    settings.maximumProcessed + CONFIG.maxQueuedInspections
-  );
+  const discoveryCeiling = settings.maximumProcessed;
 
   for (const anchor of anchors) {
     if (unique.size >= CONFIG.maxListingsPerDomPass) break;
@@ -2191,6 +2186,19 @@ async function autoLoadListings() {
     await scanPage();
 
     if (!runActivityAllowed(generation) || evaluateAndFinaliseIfNeeded()) break;
+
+    const discoveryLimit = ScannerRuntime.discoveryLimitState(
+      countStates(),
+      settings.maximumProcessed
+    );
+    if (discoveryLimit.reached) {
+      scrollState = "processing";
+      updateProgress();
+      schedulePersist();
+      await waitForScanDelay(CONFIG.autoLoadPauseMs);
+      if (!runActivityAllowed(generation)) break;
+      continue;
+    }
 
     const container = findResultsScrollContainer();
     const before = getScrollMetrics(container);
@@ -3369,12 +3377,13 @@ function renderPanel(progress) {
   panel.compactText.textContent = `Kelmar · ${compactState}${progress.matched ? ` · ${progress.matched} match${progress.matched === 1 ? "" : "es"}` : ""}`;
   panel.limitText.textContent =
     `${progress.matched}/${progress.targetMatches} matches · ` +
-    `${progress.processed}/${progress.maximumProcessed} processed · ` +
+    `${progress.discovered}/${progress.maximumProcessed} found · ` +
+    `${progress.processed} processed · ` +
     `${Math.floor(progress.elapsedSeconds / 60)}m ${progress.elapsedSeconds % 60}s`;
 
   const percentage = Math.min(
     100,
-    Math.max(0, (progress.processed / Math.max(1, progress.maximumProcessed)) * 100)
+    Math.max(0, (progress.discovered / Math.max(1, progress.maximumProcessed)) * 100)
   );
   panel.progressBar.style.width = `${percentage}%`;
 

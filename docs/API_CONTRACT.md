@@ -56,7 +56,7 @@ Updates discovery and classification counts between batches. Listing-derived cou
 
 ### `POST /api/extension/scans/:scanId/complete`
 
-Marks a scan terminal after uploads finish. Scan status is one of `completed`, `stopped`, `limit_reached`, `timed_out`, or `failed`. Stop reason is nullable or one of `target_reached`, `processed_limit_reached`, `duration_limit_reached`, `no_more_results`, `user_stopped`, `extension_closed`, or `error`.
+Marks a scan terminal after uploads finish. Scan status is one of `completed`, `stopped`, `limit_reached`, `timed_out`, or `failed`. Stop reason is nullable or one of `target_reached`, `processed_limit_reached`, `duration_limit_reached`, `no_more_results`, `user_stopped`, `extension_closed`, or `error`. The legacy `processed_limit_reached` wire value now means the configured found-listing cap was reached and the already-found listings finished processing.
 
 ### `GET /api/extension/scans/:scanId`
 

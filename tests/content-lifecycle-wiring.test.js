@@ -300,11 +300,12 @@ test("DOM mutations trigger immediate discovery and final IDs never requeue", ()
   assert.match(scan, /queuedListingIds\.has\(listing\.id\)/);
 });
 
-test("target completion closes every discovery and scrolling admission point", () => {
+test("match goal is informational and completion still closes every activity admission point", () => {
   const finalization = functionSource("markFinal", "function classifyListing");
   assert.match(finalization, /status === "matched"/);
   assert.match(finalization, /countStates\(\)\.matched >= settings\.targetMatches/);
-  assert.match(finalization, /requestRunCompletion\("target_reached", "completed"\)/);
+  assert.match(finalization, /performanceDiagnostics\.markTargetReached\(\)/);
+  assert.doesNotMatch(finalization, /requestRunCompletion\("target_reached"/);
 
   const autoLoad = functionSource("autoLoadListings", "function cancelOutstandingLedgerWork");
   assert.ok(
@@ -320,6 +321,23 @@ test("target completion closes every discovery and scrolling admission point", (
   const observer = source.slice(source.indexOf("const observer = new MutationObserver"));
   assert.match(observer, /if \(!runActivityAllowed\(\) \|\| isListingRoute\(\)\) return/);
   assert.match(observer, /if \(!runActivityAllowed\(generation\)\) return/);
+});
+
+test("maximum listings is a strict found cap that drains without further scrolling", () => {
+  const cards = functionSource("collectCards", "function collectScannableEntries");
+  assert.match(cards, /const discoveryCeiling = settings\.maximumProcessed/);
+  assert.doesNotMatch(cards, /maximumProcessed \+ CONFIG\.maxQueuedInspections/);
+
+  const terminal = functionSource("getTerminalCondition", "function evaluateAndFinaliseIfNeeded");
+  assert.match(terminal, /ScannerRuntime\.discoveryLimitState/);
+  assert.match(terminal, /if \(discoveryLimit\.complete\)/);
+  assert.doesNotMatch(terminal, /counts\.matched >= settings\.targetMatches/);
+
+  const autoLoad = functionSource("autoLoadListings", "function cancelOutstandingLedgerWork");
+  const limitCheck = autoLoad.indexOf("if (discoveryLimit.reached)");
+  const nextScroll = autoLoad.indexOf("setScrollTop(container, nextTop)");
+  assert.ok(limitCheck >= 0 && limitCheck < nextScroll, "found cap must be checked before the next scroll");
+  assert.match(autoLoad, /scrollState = "processing"[\s\S]*continue/);
 });
 
 test("static-first inspection renders only when final detail evidence remains insufficient", () => {

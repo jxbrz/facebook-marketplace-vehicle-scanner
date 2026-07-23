@@ -68,6 +68,13 @@ test("popup exposes warnings and aggregate reasons", () => {
   assert.match(html, /id="reasonCounts"/);
 });
 
+test("scan limits are presented as found-listing limits", () => {
+  assert.match(settingsHtml, /Maximum found/);
+  assert.match(js, /progress\.discovered.*progress\.maximumProcessed.*found/);
+  assert.match(js, /found-listing cap reached/);
+  assert.doesNotMatch(settingsHtml, /Maximum inspected/);
+});
+
 test("release popup excludes temporary acceptance controls", () => {
   assert.doesNotMatch(html, /runNormalModeTest|copyNormalModeReport|Temporary 23\.2\.3 acceptance/);
   assert.doesNotMatch(js, /normalModeTestConfig|copyTextWithoutPermission/);

@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const {
   chooseScrollCandidate,
   createBoundedQueue,
+  discoveryLimitState,
   mergeScannableEntries,
   nextEndDetectionState,
   normaliseListingUrl
@@ -73,6 +74,21 @@ test("scroll selection ignores a replaced disconnected container", () => {
   const replaced = { id: "old", cardCount: 8, totalDepth: 8, range: 2400, connected: false };
   const current = { id: "current", cardCount: 8, totalDepth: 16, range: 2200 };
   assert.equal(chooseScrollCandidate([replaced, current]).id, "current");
+});
+
+test("found-listing cap stops discovery immediately and completes only after draining", () => {
+  assert.deepEqual(
+    discoveryLimitState({ discovered: 499, pending: 260 }, 500),
+    { reached: false, draining: false, complete: false }
+  );
+  assert.deepEqual(
+    discoveryLimitState({ discovered: 500, pending: 258 }, 500),
+    { reached: true, draining: true, complete: false }
+  );
+  assert.deepEqual(
+    discoveryLimitState({ discovered: 500, pending: 0 }, 500),
+    { reached: true, draining: false, complete: true }
+  );
 });
 
 test("end detection continues after growth and one empty scroll", () => {

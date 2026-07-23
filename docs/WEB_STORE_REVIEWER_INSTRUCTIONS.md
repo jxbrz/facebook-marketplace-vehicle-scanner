@@ -24,7 +24,7 @@ Facebook may challenge unfamiliar logins. Prefer a reviewer-owned Facebook accou
 4. Open the extension and enter:
    - Dashboard URL: `[REVIEW_DASHBOARD_URL]`
    - Extension API token: `[TEMPORARY_REVIEW_API_TOKEN]`
-5. Set Target matches to `1`, Maximum processed to `5`, and Maximum duration to `2` minutes. Leave make/model filters empty unless the supplied search instructions specify test values.
+5. Set Match goal to `1`, Maximum found to `5`, and Maximum duration to `2` minutes. Leave make/model filters empty unless the supplied search instructions specify test values.
 6. Click **Start scan**. Merely opening/reloading Facebook does not start scanning.
 7. Expected behaviour: the search page may auto-scroll; at most two conservatively spaced inactive Facebook listing tabs are open for missing details and each closes automatically; the panel stops at the first configured limit.
 8. Click **Open results** or allow configured auto-open. Sign in to the isolated dashboard with:

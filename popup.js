@@ -113,7 +113,7 @@ async function refreshSavedSearches(silent = false) {
 }
 
 function reasonLabel(reason) {
-  const labels = { target_reached: "target reached", processed_limit_reached: "inspection cap reached", duration_limit_reached: "time limit reached", no_more_results: "no more results", user_stopped: "stopped by user", storage_soft_limit: "paused to protect recovery data", storage_quota: "paused because recovery storage is unavailable", extension_closed: "interrupted after navigation or restart", error: "scanner error" };
+  const labels = { target_reached: "target reached", processed_limit_reached: "found-listing cap reached", duration_limit_reached: "time limit reached", no_more_results: "no more results", user_stopped: "stopped by user", storage_soft_limit: "paused to protect recovery data", storage_quota: "paused because recovery storage is unavailable", extension_closed: "interrupted after navigation or restart", error: "scanner error" };
   return labels[reason] || reason || "";
 }
 
@@ -159,7 +159,7 @@ function updateProgress(progress) {
   if (progress?.storageHealth?.persistenceDegraded) elements.status.textContent = "Paused: local resume protection is unavailable.";
   else if (!progress?.scanId) elements.status.textContent = "Ready to start a bounded Marketplace scan.";
   else if (progress.remoteSyncError) elements.status.textContent = `Upload error: ${progress.remoteSyncError}`;
-  else if (progress.scanningActive) elements.status.textContent = `${progress.matched}/${progress.targetMatches} matched · ${progress.processed}/${progress.maximumProcessed} inspected · ${Math.floor((progress.elapsedSeconds || 0) / 60)}m ${(progress.elapsedSeconds || 0) % 60}s`;
+  else if (progress.scanningActive) elements.status.textContent = `${progress.matched}/${progress.targetMatches} matched · ${progress.discovered}/${progress.maximumProcessed} found · ${progress.processed} inspected · ${Math.floor((progress.elapsedSeconds || 0) / 60)}m ${(progress.elapsedSeconds || 0) % 60}s`;
   else if (progress.interrupted) elements.status.textContent = "Interrupted scan found. Resume or discard it.";
   else if (progress.paused) elements.status.textContent = "Scan paused.";
   else elements.status.textContent = `${progress.scanStatus}${reasonLabel(progress.stopReason) ? ` — ${reasonLabel(progress.stopReason)}` : ""}. ${progress.matched || 0} matches uploaded.`;
