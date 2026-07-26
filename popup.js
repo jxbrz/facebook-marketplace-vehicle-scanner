@@ -22,24 +22,6 @@ async function getActiveMarketplaceTab() {
 
 async function sendToActiveTab(message) {
   const tab = await getActiveMarketplaceTab();
-  if (message?.type === "START_SCAN") {
-    let versionResponse = null;
-    try {
-      versionResponse = await chrome.tabs.sendMessage(tab.id, { type: "GET_SCANNER_VERSION" });
-    } catch {
-      // Existing Marketplace tabs can retain an older content script after an
-      // unpacked extension reload. The version check below refreshes them.
-    }
-    const expectedVersion = chrome.runtime.getManifest().version;
-    if (
-      !versionResponse?.ok ||
-      versionResponse.result?.extensionVersion !== expectedVersion ||
-      versionResponse.result?.evaluatorLifecycleVersion !== ScannerDecisionPolicy.EVALUATOR_LIFECYCLE_VERSION
-    ) {
-      await chrome.tabs.reload(tab.id);
-      throw new Error(`Marketplace was refreshed to activate scanner v${expectedVersion}. Reopen the scanner when the page has loaded.`);
-    }
-  }
   const response = await chrome.tabs.sendMessage(tab.id, message);
   if (!response?.ok) throw new Error(response?.error || "The scanner did not respond.");
   return response.result;
@@ -181,7 +163,8 @@ elements.savedSearch.addEventListener("change", () => chooseSource(elements.save
 elements.refreshSearches.addEventListener("click", () => refreshSavedSearches());
 elements.openSettings.addEventListener("click", () => chrome.runtime.openOptionsPage());
 elements.openDashboard.addEventListener("click", () => chrome.tabs.create({ url: `${storedSettings?.dashboardUrl || ScannerSettings.CANONICAL_DASHBOARD_ORIGIN}/saved-searches` }));
-elements.startScan.addEventListener("click", async () => {
+elements.startScan.addEventListener("click", async event => {
+  event.preventDefault();
   elements.startScan.disabled = true;
   try {
     if (!storedSettings.extensionApiToken) throw new Error("Open full settings and add the dashboard API token first.");
