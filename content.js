@@ -677,8 +677,8 @@ function buildCanonicalFacts(metadata = {}, result = null, options = {}) {
     listingUrl: result?.finalUrl || metadata.url,
     title: result?.listingTitle || metadata.title,
     description: result?.fullDescription,
-    price: toNullableNonNegativeInteger(result?.price) ?? toNullableNonNegativeInteger(metadata.price),
-    mileage: getMileageForFilter(metadata, result),
+    price: getPriceForFilter(metadata, result, detailAvailable),
+    mileage: getMileageForFilter(metadata, result, detailAvailable),
     year: toNullableVehicleYear(result?.year) ?? toNullableVehicleYear(metadata.year),
     make: result?.detectedMake || vehicleAttribute(result, ["make", "manufacturer", "marque"]),
     model: result?.detectedModel || vehicleAttribute(result, ["model", "vehicle model"]),
@@ -695,8 +695,14 @@ function buildCanonicalFacts(metadata = {}, result = null, options = {}) {
     location: result?.location || metadata.location,
     cardText: metadata.cardText,
     sources: {
-      price: result?.price !== null && result?.price !== undefined ? "listing_detail" : "search_card",
-      mileage: result?.mileageDetail ? "listing_detail" : metadata.mileage !== null && metadata.mileage !== undefined ? "search_card" : "unknown",
+      price: result?.price !== null && result?.price !== undefined
+        ? "listing_detail"
+        : detailAvailable ? "unknown" : "search_card",
+      mileage: result?.mileageDetail
+        ? "listing_detail"
+        : detailAvailable
+          ? "unknown"
+          : metadata.mileage !== null && metadata.mileage !== undefined ? "search_card" : "unknown",
       year: result?.year !== null && result?.year !== undefined ? "listing_detail" : "search_card",
       make: result?.makeModelSource || (detailAvailable ? "listing_detail" : "search_card"),
       model: result?.makeModelSource || (detailAvailable ? "listing_detail" : "search_card"),
@@ -1228,10 +1234,16 @@ function toNullableVehicleYear(value) {
   return year;
 }
 
-function getMileageForFilter(metadata, result) {
+function getPriceForFilter(metadata, result, detailAvailable = false) {
+  const extractedPrice = toNullableNonNegativeInteger(result?.price);
+  if (extractedPrice !== null || detailAvailable) return extractedPrice;
+  return toNullableNonNegativeInteger(metadata.price);
+}
+
+function getMileageForFilter(metadata, result, detailAvailable = false) {
   return MileageUtils.sourceMileageInMiles(
     result?.mileageDetail,
-    metadata.mileage ?? result?.mileage
+    detailAvailable ? null : metadata.mileage ?? result?.mileage
   );
 }
 
@@ -1796,9 +1808,12 @@ async function processListing(entry, generation) {
   );
   const staticEvaluation = evaluateFilters(metadata, staticCombinedResult, { phase: "final" });
   const staticFinalization = ScannerDecisionPolicy.staticDetailFinalizationDecision(staticEvaluation);
+  const staticRejectFinalized =
+    staticFinalization.mayFinalize === true &&
+    staticFinalization.action === "finalize_static_reject";
   let result = staticResult;
 
-  if (staticFinalization.mayFinalize) {
+  if (staticRejectFinalized) {
     performanceDiagnostics.increment("renderedSkippedStaticReject");
     result = {
       ...staticResult,
@@ -1819,6 +1834,11 @@ async function processListing(entry, generation) {
       outcome: "skipped_static_rejection"
     });
   } else {
+    performanceDiagnostics.increment(
+      staticEvaluation.decision === "match"
+        ? "renderedRequiredCanonicalEnrichment"
+        : "renderedRequiredDecisionIncomplete"
+    );
     performanceDiagnostics.increment("renderedAttempts");
     performanceDiagnostics.recordListing(listing.id, "renderedStart");
     recordDiagnosticStage(listing.id, "rendered_extraction_started", {

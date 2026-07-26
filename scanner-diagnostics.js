@@ -54,7 +54,10 @@
       timeouts: 0,
       renderedAttempts: 0,
       renderedTimeouts: 0,
-      renderedSkippedStaticReject: 0
+      renderedSkippedStaticReject: 0,
+      renderedSkippedDecisionComplete: 0,
+      renderedRequiredDecisionIncomplete: 0,
+      renderedRequiredCanonicalEnrichment: 0
     };
     let targetReachedAt = null;
     let completedAt = null;

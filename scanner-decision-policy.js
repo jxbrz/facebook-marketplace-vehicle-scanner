@@ -5,7 +5,7 @@
 })(typeof globalThis === "object" ? globalThis : this, function createScannerDecisionPolicy() {
   "use strict";
 
-  const EVALUATOR_LIFECYCLE_VERSION = 4;
+  const EVALUATOR_LIFECYCLE_VERSION = 6;
   const CARD_FINALIZATION_CODES = new Set([
     "price_below_minimum",
     "price_above_maximum",
@@ -94,12 +94,17 @@
     }
     const source = String(item.source || "");
     const confidence = String(item.confidence || "unknown");
-    if (source === "unknown" || source === "search_card" || confidence === "unknown") return false;
-    if (item.code === "excluded_keyword_present" || item.code === "repaired_vehicle_excluded") {
+    if (source === "unknown" || source === "search_card") return false;
+    if (item.code === "excluded_keyword_present") {
       return source === "listing_detail";
     }
+    if (/^(?:make|model)_/.test(item.code)) {
+      return confidence === "high" &&
+        /structured_fields|vehicle_attributes|listing_title/.test(source);
+    }
     if (/^category_/.test(item.code)) {
-      return source === "trusted_listing_evidence" || source === "listing_detail";
+      return confidence === "high" &&
+        (source === "trusted_listing_evidence" || source === "listing_detail");
     }
     return source === "listing_detail" && ["moderate", "high"].includes(confidence);
   }
@@ -111,25 +116,20 @@
     const evidence = Array.isArray(evaluation.rejectionEvidence)
       ? evaluation.rejectionEvidence
       : [];
-    const rejectionReasons = Array.isArray(evaluation.rejectionReasons)
-      ? evaluation.rejectionReasons
-      : [];
     const byCode = new Map(evidence.map(item => [item?.code, item]));
-    const reliable =
+    const reliableReasonCodes = reasonCodes.filter(code =>
+      STATIC_DETAIL_FINALIZATION_CODES.has(code) &&
+      staticDetailEvidenceIsReliable(byCode.get(code))
+    );
+    const trustedReject =
       evaluation.decision === "reject" &&
       evaluation.provenReject === true &&
-      evaluation.detailRequired === false &&
-      rejectionReasons.length > 0 &&
-      reasonCodes.length === rejectionReasons.length &&
-      reasonCodes.every(code =>
-        STATIC_DETAIL_FINALIZATION_CODES.has(code) &&
-        staticDetailEvidenceIsReliable(byCode.get(code))
-      );
+      reliableReasonCodes.length > 0;
 
     return {
-      mayFinalize: reliable,
-      action: reliable ? "finalize_static_reject" : "inspect_rendered",
-      reasonCodes
+      mayFinalize: trustedReject,
+      action: trustedReject ? "finalize_static_reject" : "inspect_rendered",
+      reasonCodes: trustedReject ? reliableReasonCodes : []
     };
   }
 

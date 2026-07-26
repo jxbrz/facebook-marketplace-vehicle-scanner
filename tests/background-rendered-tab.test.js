@@ -245,6 +245,8 @@ test("static and rendered inspection phases use distinct bounded message paths w
         fullDescription: "Rendered seller description",
         listingTitle: "2018 Volkswagen Polo",
         vehicleAttributes: {},
+        price: 999,
+        mileageDetail: { value: 999, unit: "mi", originalText: "999 miles" },
         imageUrls: ["https://scontent-lhr6-1.xx.fbcdn.net/photo.jpg"],
         extractionSource: "rendered-semantic-dom"
       }
@@ -257,6 +259,8 @@ test("static and rendered inspection phases use distinct bounded message paths w
             fullDescription: null,
             listingTitle: "2018 Volkswagen Polo",
             vehicleAttributes: {},
+            price: 6495,
+            mileageDetail: { value: 72000, unit: "mi", originalText: "72,000 miles" },
             imageUrls: [],
             extractionSource: "embedded-json",
             structuredDetailsFound: true
@@ -292,6 +296,12 @@ test("static and rendered inspection phases use distinct bounded message paths w
   assert.equal(fetchCount, 1);
   assert.equal(harness.created.length, 1);
   assert.equal(renderedResult.fullDescription, "Rendered seller description");
+  assert.equal(renderedResult.price, 6495);
+  assert.deepEqual(renderedResult.mileageDetail, {
+    value: 72000,
+    unit: "mi",
+    originalText: "72,000 miles"
+  });
   assert.equal(renderedResult.inspectionDiagnostics.renderedCompleted, true);
 });
 

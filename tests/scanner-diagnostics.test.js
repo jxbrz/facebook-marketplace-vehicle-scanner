@@ -36,6 +36,9 @@ test("diagnostics aggregate bounded stage, worker, target and scroll measurement
   diagnostics.increment("renderedAttempts", 2);
   diagnostics.increment("renderedTimeouts");
   diagnostics.increment("renderedSkippedStaticReject", 3);
+  diagnostics.increment("renderedSkippedDecisionComplete", 4);
+  diagnostics.increment("renderedRequiredDecisionIncomplete", 5);
+  diagnostics.increment("renderedRequiredCanonicalEnrichment", 6);
   diagnostics.setGauges({ queueSize: 4, activeWorkers: 3, processed: 2 });
   diagnostics.recordScroll({ at: 2000, target: "window", beforeTop: 0, afterTop: 500, beforeHeight: 2000, afterHeight: 2500, newCards: 4 });
   diagnostics.recordScroll({ at: 3000, target: "window", beforeTop: 500, afterTop: 1000, beforeHeight: 2500, afterHeight: 3000, newCards: 2 });
@@ -70,7 +73,10 @@ test("diagnostics aggregate bounded stage, worker, target and scroll measurement
       timeouts: 1,
       renderedAttempts: 2,
       renderedTimeouts: 1,
-      renderedSkippedStaticReject: 3
+      renderedSkippedStaticReject: 3,
+      renderedSkippedDecisionComplete: 4,
+      renderedRequiredDecisionIncomplete: 5,
+      renderedRequiredCanonicalEnrichment: 6
     },
     gauges: { queueSize: 4, activeWorkers: 3, processed: 2 },
     lastScroll: {

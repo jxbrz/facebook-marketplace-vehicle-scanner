@@ -178,11 +178,15 @@ test("normal runtime records detail completion and finalization provenance", () 
   assert.match(source, /"cached_detail" : "detail"/);
 });
 
-test("start refuses an old content script and refreshes the Marketplace tab", () => {
+test("start sends directly to the content lifecycle without navigating Marketplace", () => {
   const popup = fs.readFileSync("popup.js", "utf8");
-  assert.match(popup, /GET_SCANNER_VERSION/);
-  assert.match(popup, /evaluatorLifecycleVersion/);
-  assert.match(popup, /chrome\.tabs\.reload\(tab\.id\)/);
+  const send = popup.slice(
+    popup.indexOf("async function sendToActiveTab"),
+    popup.indexOf("function setConnection")
+  );
+  assert.match(send, /chrome\.tabs\.sendMessage\(tab\.id, message\)/);
+  assert.doesNotMatch(send, /chrome\.tabs\.(?:reload|update)|location\.(?:assign|replace|reload)/);
+  assert.match(popup, /startScan\.addEventListener\("click", async event => \{[\s\S]*event\.preventDefault\(\)/);
   assert.match(source, /type === "GET_SCANNER_VERSION"/);
 });
 
@@ -340,15 +344,37 @@ test("maximum listings is a strict found cap that drains without further scrolli
   assert.match(autoLoad, /scrollState = "processing"[\s\S]*continue/);
 });
 
-test("static-first inspection renders only when final detail evidence remains insufficient", () => {
+test("static terminal rejects skip rendering but static matches require canonical enrichment", () => {
   const process = functionSource("processListing", "async function scanPage");
   assert.ok(process.indexOf("await inspectStaticListing") < process.indexOf("staticDetailFinalizationDecision"));
   assert.ok(process.indexOf("staticDetailFinalizationDecision") < process.indexOf("await inspectRenderedListing"));
-  assert.match(process, /if \(staticFinalization\.mayFinalize\)/);
+  assert.ok(process.indexOf("await inspectRenderedListing") < process.indexOf("saveCachedResult"));
+  assert.ok(process.indexOf("await inspectRenderedListing") < process.indexOf("classifyListing"));
+  assert.match(process, /staticFinalization\.mayFinalize === true/);
+  assert.match(process, /staticFinalization\.action === "finalize_static_reject"/);
+  assert.match(process, /if \(staticRejectFinalized\)/);
   assert.match(process, /renderedSkippedStaticReject/);
-  assert.match(process, /outcome: "skipped_static_rejection"/);
+  assert.match(process, /renderedRequiredDecisionIncomplete/);
+  assert.match(process, /renderedRequiredCanonicalEnrichment/);
+  assert.match(process, /"skipped_static_rejection"/);
+  assert.doesNotMatch(process, /"skipped_decision_complete"|finalize_static_match/);
   assert.match(process, /await inspectRenderedListing\(listing\.url, listing\.id, staticResult\)/);
 
   const upload = functionSource("queueRemoteListing", "async function pruneUploadedListings");
   assert.doesNotMatch(upload, /await/);
+});
+
+test("final canonical price and mileage use extracted detail without card fallback", () => {
+  const facts = functionSource("buildCanonicalFacts", "function evaluateFilters");
+  assert.match(facts, /price: getPriceForFilter\(metadata, result, detailAvailable\)/);
+  assert.match(facts, /mileage: getMileageForFilter\(metadata, result, detailAvailable\)/);
+
+  const price = functionSource("getPriceForFilter", "function getMileageForFilter");
+  assert.match(price, /if \(extractedPrice !== null \|\| detailAvailable\) return extractedPrice/);
+
+  const mileage = functionSource("getMileageForFilter", "function normaliseFreshFacebookUkMileage");
+  assert.match(
+    mileage,
+    /MileageUtils\.sourceMileageInMiles\([\s\S]*result\?\.mileageDetail,[\s\S]*detailAvailable \? null : metadata\.mileage/
+  );
 });
