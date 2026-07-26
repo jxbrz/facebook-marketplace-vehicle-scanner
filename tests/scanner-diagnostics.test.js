@@ -31,6 +31,8 @@ test("diagnostics aggregate bounded stage, worker, target and scroll measurement
   }
   diagnostics.recordListing("3", "discovered", 5000);
   diagnostics.increment("duplicateSkipped");
+  diagnostics.increment("domNodesAlreadyInspectedSkipped", 7);
+  diagnostics.increment("listingIdentityAlreadyProcessedSkipped", 2);
   diagnostics.increment("retries", 2);
   diagnostics.increment("timeouts");
   diagnostics.increment("renderedAttempts", 2);
@@ -69,6 +71,8 @@ test("diagnostics aggregate bounded stage, worker, target and scroll measurement
     counters: {
       discovered: 2,
       duplicateSkipped: 1,
+      domNodesAlreadyInspectedSkipped: 7,
+      listingIdentityAlreadyProcessedSkipped: 2,
       retries: 2,
       timeouts: 1,
       renderedAttempts: 2,

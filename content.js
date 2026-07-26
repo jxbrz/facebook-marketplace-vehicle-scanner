@@ -52,6 +52,8 @@ const FINAL_LISTING_STATUSES = new Set([
   "rejected",
   "unavailable"
 ]);
+const LISTING_LINK_SELECTOR =
+  'a[href*="/marketplace/item/"], a[href*="/item/"]';
 
 let settings = { ...DEFAULT_SETTINGS };
 let currentRouteKey = getRouteKey();
@@ -119,6 +121,8 @@ let imageDiagnosticsLogged = new Set();
 let filterDiagnosticsByListingId = new Map();
 let diagnosticTimelineByListingId = new Map();
 let usingPersistedSettingsSnapshot = false;
+let domDiscoveryTracker = ScannerRuntime.createDomDiscoveryTracker();
+let pendingDiscoveryRoots = new Set();
 const scanDelayWaits = new Set();
 
 function resetPerformanceDiagnostics() {
@@ -780,7 +784,7 @@ function markDiscovered(listing, metadata) {
   const current = getLedgerEntry(listing.id);
 
   if (current) {
-    performanceDiagnostics.increment("duplicateSkipped");
+    recordListingIdentityAlreadyProcessed();
   } else {
     performanceDiagnostics.recordListing(listing.id, "discovered");
     performanceDiagnostics.increment("discovered");
@@ -798,6 +802,16 @@ function markDiscovered(listing, metadata) {
     metadata,
     discoveredAt: current?.discoveredAt || Date.now()
   });
+}
+
+function recordListingIdentityAlreadyProcessed() {
+  performanceDiagnostics.increment("duplicateSkipped");
+  performanceDiagnostics.increment("listingIdentityAlreadyProcessedSkipped");
+}
+
+function recordDomNodeAlreadyInspected() {
+  performanceDiagnostics.increment("duplicateSkipped");
+  performanceDiagnostics.increment("domNodesAlreadyInspectedSkipped");
 }
 
 function markFinal(listingId, status, options = {}) {
@@ -1075,6 +1089,74 @@ function evaluateAndFinaliseIfNeeded() {
   return false;
 }
 
+function queueDomDiscoveryRoot(root) {
+  if (
+    root !== document &&
+    root?.nodeType !== Node.ELEMENT_NODE
+  ) {
+    return false;
+  }
+
+  if (root === document) {
+    pendingDiscoveryRoots.clear();
+    pendingDiscoveryRoots.add(document);
+    return true;
+  }
+
+  if (pendingDiscoveryRoots.has(document)) return false;
+
+  for (const existingRoot of pendingDiscoveryRoots) {
+    if (existingRoot === root || existingRoot.contains?.(root)) return false;
+    if (root.contains?.(existingRoot)) pendingDiscoveryRoots.delete(existingRoot);
+  }
+
+  pendingDiscoveryRoots.add(root);
+  return true;
+}
+
+function takePendingDiscoveryRoots() {
+  const roots = [...pendingDiscoveryRoots];
+  pendingDiscoveryRoots.clear();
+  return roots.filter(root => root === document || root?.isConnected !== false);
+}
+
+function getListingAnchorsWithin(root) {
+  const anchors = [];
+  if (root?.matches?.(LISTING_LINK_SELECTOR)) anchors.push(root);
+  anchors.push(...(root?.querySelectorAll?.(LISTING_LINK_SELECTOR) ?? []));
+  return anchors;
+}
+
+function queueMutationDiscoveryRoots(mutations) {
+  let queued = false;
+
+  for (const mutation of mutations) {
+    if (isExtensionMutation(mutation)) continue;
+
+    if (mutation.type === "attributes") {
+      queued = queueDomDiscoveryRoot(mutation.target) || queued;
+      continue;
+    }
+
+    let addedElement = false;
+    for (const node of mutation.addedNodes) {
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      addedElement = true;
+      queued = queueDomDiscoveryRoot(node) || queued;
+    }
+
+    if (!addedElement) {
+      const target = mutation.target?.nodeType === Node.ELEMENT_NODE
+        ? mutation.target
+        : mutation.target?.parentElement;
+      const listingAnchor = target?.closest?.(LISTING_LINK_SELECTOR);
+      if (listingAnchor) queued = queueDomDiscoveryRoot(listingAnchor) || queued;
+    }
+  }
+
+  return queued;
+}
+
 function collectCards() {
   if (!runActivityAllowed()) return [];
   for (const [listingId, card] of cardByListingId.entries()) {
@@ -1083,53 +1165,74 @@ function collectCards() {
     }
   }
 
-  const anchors = [
-    ...document.querySelectorAll(
-      'a[href*="/marketplace/item/"], a[href*="/item/"]'
-    )
-  ];
+  const roots = takePendingDiscoveryRoots();
+  if (!roots.length) return [];
+
   const unique = new Map();
-
   const discoveryCeiling = settings.maximumProcessed;
+  let inspectedNodeCount = 0;
+  let deferredFromIndex = -1;
 
-  for (const anchor of anchors) {
-    if (unique.size >= CONFIG.maxListingsPerDomPass) break;
+  rootLoop:
+  for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+    const root = roots[rootIndex];
+    const seenListingIds = new Set();
 
-    const listing = normaliseListingUrl(anchor.href);
+    for (const anchor of getListingAnchorsWithin(root)) {
+      const listing = normaliseListingUrl(anchor.href);
+      if (!listing || seenListingIds.has(listing.id)) continue;
 
-    if (!listing || unique.has(listing.id)) continue;
-    const existingEntry = getLedgerEntry(listing.id);
-    if (!existingEntry) performanceDiagnostics.recordListing(listing.id, "idExtracted");
+      const existingEntry = getLedgerEntry(listing.id);
+      if (!existingEntry && ledgerByListingId.size >= discoveryCeiling) continue;
 
-    if (!existingEntry && ledgerByListingId.size >= discoveryCeiling) {
-      continue;
+      const card = findCard(anchor, listing.id);
+      if (!card) continue;
+
+      const rect = card.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      seenListingIds.add(listing.id);
+
+      if (inspectedNodeCount >= CONFIG.maxListingsPerDomPass) {
+        deferredFromIndex = rootIndex;
+        break rootLoop;
+      }
+
+      if (!domDiscoveryTracker.inspect(card, listing.id)) {
+        recordDomNodeAlreadyInspected();
+        cardByListingId.set(listing.id, card);
+        continue;
+      }
+
+      inspectedNodeCount += 1;
+
+      if (!existingEntry) {
+        performanceDiagnostics.recordListing(listing.id, "idExtracted");
+      }
+
+      let metadata = existingEntry?.metadata || null;
+      if (!metadata) {
+        performanceDiagnostics.recordListing(listing.id, "cardMetadataStart");
+        metadata = extractCardMetadata(card, listing.id, anchor);
+        performanceDiagnostics.recordListing(listing.id, "cardMetadataEnd");
+        markDiscovered(listing, metadata);
+      } else {
+        recordListingIdentityAlreadyProcessed();
+      }
+      cardByListingId.set(listing.id, card);
+
+      unique.set(listing.id, {
+        listing,
+        card,
+        metadata,
+        priority: getViewportPriority(card)
+      });
     }
-
-    const card = findCard(anchor, listing.id);
-    if (!card) continue;
-
-    const rect = card.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) continue;
-
-    let metadata = existingEntry?.metadata || null;
-    if (!metadata) {
-      performanceDiagnostics.recordListing(listing.id, "cardMetadataStart");
-      metadata = extractCardMetadata(card, listing.id, anchor);
-      performanceDiagnostics.recordListing(listing.id, "cardMetadataEnd");
-      markDiscovered(listing, metadata);
-    } else {
-      performanceDiagnostics.increment("duplicateSkipped");
-    }
-    cardByListingId.set(listing.id, card);
-
-    unique.set(listing.id, {
-      listing,
-      card,
-      metadata,
-      priority: getViewportPriority(card)
-    });
   }
 
+  if (deferredFromIndex >= 0) {
+    for (const root of roots.slice(deferredFromIndex)) queueDomDiscoveryRoot(root);
+    scheduleScan(0);
+  }
   updateProgress();
 
   return [...unique.values()]
@@ -2331,7 +2434,12 @@ function cancelOutstandingLedgerWork() {
 
 function connectDiscoveryObserver() {
   if (observerConnected || !scanIsRunning()) return;
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["href"],
+    childList: true,
+    subtree: true
+  });
   observerConnected = true;
   recordLifecycleDiagnostic("observer_connected");
 }
@@ -2362,6 +2470,7 @@ function stopScanningActivity(reason) {
   clearElapsedTimer();
   cancelScanDelays();
   disconnectDiscoveryObserver();
+  pendingDiscoveryRoots.clear();
   processingQueue?.stop();
   cancelOutstandingLedgerWork();
   cardByListingId = new Map();
@@ -2662,6 +2771,8 @@ function resetRunMemory() {
   cardByListingId = new Map();
   queuedListingIds = new Set();
   pendingUploadsByListingId = new Map();
+  domDiscoveryTracker = ScannerRuntime.createDomDiscoveryTracker();
+  pendingDiscoveryRoots = new Set();
   uploadInFlight = false;
   uploadRetryCount = 0;
   lastUploadAttemptAt = null;
@@ -2686,6 +2797,7 @@ function activateRunningScan(resumed = false) {
   scanGeneration += 1;
   ensureProcessingQueue();
   connectDiscoveryObserver();
+  queueDomDiscoveryRoot(document);
   armDeadlineTimer();
   armElapsedTimer();
   ensurePanel();
@@ -3511,6 +3623,7 @@ const observer = new MutationObserver(mutations => {
   if (mutations.every(isExtensionMutation)) return;
   const generation = scanGeneration;
   domMutationVersion += 1;
+  queueMutationDiscoveryRoots(mutations);
 
   clearTimeout(observerTimer);
   observerTimer = setTimeout(() => {

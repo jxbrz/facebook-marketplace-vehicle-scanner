@@ -50,6 +50,8 @@
     const counters = {
       discovered: 0,
       duplicateSkipped: 0,
+      domNodesAlreadyInspectedSkipped: 0,
+      listingIdentityAlreadyProcessedSkipped: 0,
       retries: 0,
       timeouts: 0,
       renderedAttempts: 0,

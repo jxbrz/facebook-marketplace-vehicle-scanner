@@ -2,12 +2,34 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   chooseScrollCandidate,
+  createDomDiscoveryTracker,
   createBoundedQueue,
   discoveryLimitState,
   mergeScannableEntries,
   nextEndDetectionState,
   normaliseListingUrl
 } = require("../scanner-runtime.js");
+
+test("DOM discovery tracking skips only an already-inspected node and listing pair", () => {
+  const tracker = createDomDiscoveryTracker();
+  const firstCard = {};
+  const repeatedVehicleCard = {};
+
+  assert.equal(tracker.inspect(firstCard, "listing-1"), true);
+  assert.equal(tracker.inspect(firstCard, "listing-1"), false);
+  assert.equal(tracker.inspect(firstCard, "listing-2"), true);
+  assert.equal(tracker.inspect(repeatedVehicleCard, "listing-1"), true);
+});
+
+test("a fresh scan tracker can inspect the same vehicle under a different search", () => {
+  const card = {};
+  const firstSearch = createDomDiscoveryTracker();
+  const secondSearch = createDomDiscoveryTracker();
+
+  assert.equal(firstSearch.inspect(card, "listing-1"), true);
+  assert.equal(firstSearch.inspect(card, "listing-1"), false);
+  assert.equal(secondSearch.inspect(card, "listing-1"), true);
+});
 
 function deferred() {
   let resolve;

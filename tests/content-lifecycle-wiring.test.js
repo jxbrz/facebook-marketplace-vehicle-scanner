@@ -151,6 +151,42 @@ test("already discovered cards reuse canonical metadata instead of extracting it
   assert.match(collect, /if \(!metadata\) \{[\s\S]*extractCardMetadata/);
 });
 
+test("discovery consumes incremental mutation roots and tracks DOM nodes separately from listing identity", () => {
+  const collect = functionSource("collectCards", "function collectScannableEntries");
+  assert.match(collect, /takePendingDiscoveryRoots\(\)/);
+  assert.match(collect, /getListingAnchorsWithin\(root\)/);
+  assert.match(collect, /domDiscoveryTracker\.inspect\(card, listing\.id\)/);
+  assert.match(collect, /recordDomNodeAlreadyInspected\(\)/);
+  assert.match(collect, /recordListingIdentityAlreadyProcessed\(\)/);
+  assert.doesNotMatch(collect, /document\.querySelectorAll/);
+
+  const domSkipped = functionSource("recordDomNodeAlreadyInspected", "function markFinal");
+  assert.match(domSkipped, /duplicateSkipped/);
+  assert.match(domSkipped, /domNodesAlreadyInspectedSkipped/);
+
+  const mutationRoots = functionSource("queueMutationDiscoveryRoots", "function collectCards");
+  assert.match(mutationRoots, /mutation\.addedNodes/);
+  assert.match(mutationRoots, /mutation\.type === "attributes"/);
+  assert.match(mutationRoots, /queueDomDiscoveryRoot/);
+
+  const observer = source.slice(source.indexOf("const observer = new MutationObserver"));
+  assert.match(observer, /queueMutationDiscoveryRoots\(mutations\)/);
+  assert.match(source, /attributeFilter: \["href"\]/);
+});
+
+test("DOM discovery tracking is reset only for a new scan context", () => {
+  const reset = functionSource("resetRunMemory", "function activateRunningScan");
+  assert.match(reset, /domDiscoveryTracker = ScannerRuntime\.createDomDiscoveryTracker\(\)/);
+  assert.match(reset, /pendingDiscoveryRoots = new Set\(\)/);
+
+  const activate = functionSource("activateRunningScan", "async function startNewScan");
+  assert.match(activate, /queueDomDiscoveryRoot\(document\)/);
+  assert.doesNotMatch(activate, /domDiscoveryTracker = ScannerRuntime\.createDomDiscoveryTracker/);
+
+  const payload = functionSource("buildScanCreatePayload", "function resetRunMemory");
+  assert.match(payload, /filters: settings\.activeFilterConfig/);
+});
+
 test("card finalization and upload have independent defensive guards", () => {
   const finalization = functionSource("markFinal", "function classifyListing");
   assert.match(finalization, /cardFinalizationDecision\(evaluation\)/);
@@ -294,7 +330,7 @@ test("listing ledger persists every explicit processing lifecycle state", () => 
 });
 
 test("DOM mutations trigger immediate discovery and final IDs never requeue", () => {
-  assert.match(source, /const observer = new MutationObserver[\s\S]*domMutationVersion \+= 1[\s\S]*scheduleScan\(0\)/);
+  assert.match(source, /const observer = new MutationObserver[\s\S]*domMutationVersion \+= 1[\s\S]*queueMutationDiscoveryRoots\(mutations\)[\s\S]*scheduleScan\(0\)/);
   const growth = functionSource("waitForListingGrowth", "function waitForAnimationFrame");
   assert.match(growth, /collectCards\(\)/);
   assert.match(growth, /currentCount > previousCount \|\| currentHeight > previousHeight/);

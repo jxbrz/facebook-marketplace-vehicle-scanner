@@ -73,6 +73,34 @@
     return eligible[0];
   }
 
+  function createDomDiscoveryTracker() {
+    const listingIdsByNode = new WeakMap();
+
+    function inspect(node, listingId) {
+      if (
+        (typeof node !== "object" && typeof node !== "function") ||
+        node === null
+      ) {
+        return false;
+      }
+
+      const id = String(listingId || "");
+      if (!id) return false;
+
+      let inspectedListingIds = listingIdsByNode.get(node);
+      if (!inspectedListingIds) {
+        inspectedListingIds = new Set();
+        listingIdsByNode.set(node, inspectedListingIds);
+      }
+
+      if (inspectedListingIds.has(id)) return false;
+      inspectedListingIds.add(id);
+      return true;
+    }
+
+    return { inspect };
+  }
+
   function discoveryLimitState(counts, maximumListings) {
     const limit = Math.max(1, Math.trunc(Number(maximumListings) || 1));
     const discovered = Math.max(0, Math.trunc(Number(counts?.discovered) || 0));
@@ -213,6 +241,7 @@
   return {
     WORK_STATES,
     chooseScrollCandidate,
+    createDomDiscoveryTracker,
     createBoundedQueue,
     discoveryLimitState,
     mergeScannableEntries,
