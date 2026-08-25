@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const CategoryDetector = require("../category-detector.js");
 const {
+  categoryUploadFields,
   categoryOutcome,
   classifyFinalCategory,
   countFinalOutcomes
@@ -102,6 +103,7 @@ test("category rejection increments only rejected and cannot reach the match tar
 test("final upload payload is rejected and preserves bounded category evidence", () => {
   const classification = finalClassification("Cat S");
   const outcome = categoryOutcome(classification);
+  const uploadCategory = categoryUploadFields(classification);
   const payload = normaliseRemoteListing({
     externalListingId: "123",
     sourceUrl: "https://www.facebook.com/marketplace/item/123/",
@@ -109,8 +111,7 @@ test("final upload payload is rejected and preserves bounded category evidence",
     status: outcome.status,
     rejectionCode: outcome.code,
     rejectionReason: outcome.reason,
-    categoryDetected: classification.detected,
-    categoryType: classification.category,
+    ...uploadCategory,
     rawMetadata: {
       finalCategoryResult: classification.categoryClassificationDiagnostics.finalCategoryResult
     }
@@ -119,4 +120,46 @@ test("final upload payload is rejected and preserves bounded category evidence",
   assert.equal(payload.rejectionCode, "category");
   assert.equal(payload.categoryType, "S");
   assert.equal(payload.rawMetadata.finalCategoryResult.evidence[0].matchedPhrase, "Cat S");
+});
+
+test("generic write-off evidence is retained without leaking OTHER into categoryType", () => {
+  const classification = finalClassification("Recorded insurance write-off");
+  const uploadCategory = categoryUploadFields(classification);
+
+  assert.equal(classification.detected, true);
+  assert.equal(classification.category, "OTHER");
+  assert.deepEqual(uploadCategory, { categoryDetected: true, categoryType: null });
+
+  const payload = normaliseRemoteListing({
+    externalListingId: "123",
+    sourceUrl: "https://www.facebook.com/marketplace/item/123/",
+    status: "matched",
+    ...uploadCategory,
+    rawMetadata: {
+      finalCategoryResult: classification.categoryClassificationDiagnostics.finalCategoryResult
+    }
+  });
+  assert.equal(payload.categoryDetected, true);
+  assert.equal(payload.categoryType, null);
+  assert.equal(payload.rawMetadata.finalCategoryResult.category, "OTHER");
+});
+
+test("unexpected upload categories remain visible to strict payload validation", () => {
+  for (const classification of [
+    { detected: true, category: "UNEXPECTED", detectorRule: "future_rule" },
+    { detected: true, category: "OTHER", detectorRule: "unknown_rule" },
+    { detected: true, category: "OTHER", detectorRule: "generic_insurance_write_off" }
+  ]) {
+    const uploadCategory = categoryUploadFields(classification);
+    assert.equal(uploadCategory.categoryType, classification.category);
+    assert.throws(
+      () => normaliseRemoteListing({
+        externalListingId: "123",
+        sourceUrl: "https://www.facebook.com/marketplace/item/123/",
+        status: "matched",
+        ...uploadCategory
+      }),
+      new RegExp(`categoryType "${classification.category}" is invalid`)
+    );
+  }
 });

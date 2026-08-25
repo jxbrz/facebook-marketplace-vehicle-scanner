@@ -83,5 +83,23 @@
     };
   }
 
-  return { categoryOutcome, classifyFinalCategory, countFinalOutcomes, vehicleAttributeEvidence };
+  function categoryUploadFields(classification) {
+    const category = classification?.category ?? null;
+    const finalCategoryResult = classification?.categoryClassificationDiagnostics?.finalCategoryResult;
+    const isKnownGenericCategory = (
+      classification?.detected === true &&
+      category === "OTHER" &&
+      classification?.detectorRule === "generic_insurance_write_off" &&
+      finalCategoryResult?.detected === true &&
+      finalCategoryResult?.category === "OTHER" &&
+      finalCategoryResult?.detectorRule === "generic_insurance_write_off"
+    );
+    const categoryType = isKnownGenericCategory ? null : category;
+    return {
+      categoryDetected: classification?.detected === true,
+      categoryType
+    };
+  }
+
+  return { categoryOutcome, categoryUploadFields, classifyFinalCategory, countFinalOutcomes, vehicleAttributeEvidence };
 });

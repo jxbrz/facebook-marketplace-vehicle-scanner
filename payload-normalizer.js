@@ -22,6 +22,8 @@
   };
 
   const SENSITIVE_ATTRIBUTE_PATTERN = /(?:authorization|bearer|cookie|password|session|token|private\s*message)/i;
+  const CATEGORY_TYPES = new Set(["S", "N", "C", "D"]);
+  const HTML_WHITESPACE_ENTITY_PATTERN = /&(?:nbsp|#0*32|#x0*20|#0*160|#x0*a0);/gi;
 
   function normaliseRemoteInteger(value, minimum = 0, maximum = null) {
     if (value === null || value === undefined || value === "") return null;
@@ -136,6 +138,31 @@
     return currency;
   }
 
+  function normaliseCategoryType(value) {
+    if (value === null || value === undefined) return null;
+    const raw = String(value);
+    const text = raw.replace(HTML_WHITESPACE_ENTITY_PATTERN, " ").trim();
+    if (!text || text.toLowerCase() === "null") return null;
+    const categoryType = text.toUpperCase();
+    if (!CATEGORY_TYPES.has(categoryType)) {
+      throw new Error(
+        `categoryType ${JSON.stringify(raw)} is invalid; expected S, N, C, D, or null.`
+      );
+    }
+    return categoryType;
+  }
+
+  function isKnownGenericCategoryPayload(listing) {
+    const finalCategoryResult = listing.rawMetadata?.finalCategoryResult;
+    return (
+      String(listing.categoryType ?? "").trim().toUpperCase() === "OTHER" &&
+      listing.categoryDetected === true &&
+      finalCategoryResult?.detected === true &&
+      finalCategoryResult?.category === "OTHER" &&
+      finalCategoryResult?.detectorRule === "generic_insurance_write_off"
+    );
+  }
+
   function normaliseRawMetadata(value) {
     if (value === null || value === undefined) return null;
     if (typeof value !== "object" || Array.isArray(value)) {
@@ -154,17 +181,11 @@
       throw new Error("status must be matched, rejected, or unavailable.");
     }
 
-    const categoryType = listing.categoryType === null || listing.categoryType === undefined
+    const categoryType = isKnownGenericCategoryPayload(listing)
       ? null
-      : String(listing.categoryType).trim().toUpperCase();
-    if (categoryType !== null && !["S", "N", "C", "D"].includes(categoryType)) {
-      throw new Error("categoryType must be S, N, C, D, or null.");
-    }
+      : normaliseCategoryType(listing.categoryType);
 
     const categoryDetected = listing.categoryDetected === true || categoryType !== null;
-    if (listing.categoryDetected === true && categoryType === null) {
-      throw new Error("categoryType is required when categoryDetected is true.");
-    }
 
     const mileageValue = normaliseRemoteInteger(listing.mileageValue, 0, 1000000);
     const mileageUnit = ["mi", "km"].includes(listing.mileageUnit)
@@ -228,5 +249,5 @@
     };
   }
 
-  return { LIMITS, normaliseRemoteInteger, normaliseRemoteListing };
+  return { LIMITS, normaliseCategoryType, normaliseRemoteInteger, normaliseRemoteListing };
 });

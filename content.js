@@ -1364,6 +1364,7 @@ function normaliseFreshFacebookUkMileage(result) {
 function buildRemoteListing(entry, result = null) {
   const metadata = entry.metadata || {};
   const facts = result?.canonicalFacts || buildCanonicalFacts(metadata, result);
+  const uploadCategory = ListingCategoryPipeline.categoryUploadFields(result);
   const listingImages = ListingDetailsExtractor.resolveListingImages(result, {
     listingId: entry.listingId,
     sourceListingId: metadata.imageOwnerListingId,
@@ -1451,8 +1452,8 @@ function buildRemoteListing(entry, result = null) {
     status: entry.status,
     rejectionCode: entry.code || null,
     rejectionReason: entry.reason || null,
-    categoryDetected: Boolean(result?.detected),
-    categoryType: result?.category || null,
+    categoryDetected: uploadCategory.categoryDetected,
+    categoryType: uploadCategory.categoryType,
     extractionSource:
       result?.listingDetailExtractionSource || result?.source || result?.extractionSource || entry.source || null,
     rawMetadata: {

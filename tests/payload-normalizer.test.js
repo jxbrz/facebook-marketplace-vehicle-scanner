@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { LIMITS, normaliseRemoteListing } = require("../payload-normalizer.js");
+const { LIMITS, normaliseCategoryType, normaliseRemoteListing } = require("../payload-normalizer.js");
 
 function listing(overrides = {}) {
   return {
@@ -95,9 +95,67 @@ test("historical mileage without correction provenance remains unchanged", () =>
 test("validates required URLs, statuses, categories, and metadata shape", () => {
   assert.throws(() => normaliseRemoteListing(listing({ sourceUrl: "javascript:alert(1)" })), /HTTP or HTTPS/);
   assert.throws(() => normaliseRemoteListing(listing({ status: "pending" })), /status/);
-  assert.throws(() => normaliseRemoteListing(listing({ categoryDetected: true })), /categoryType/);
-  assert.throws(() => normaliseRemoteListing(listing({ categoryType: "X" })), /categoryType/);
+  assert.throws(
+    () => normaliseRemoteListing(listing({ categoryType: "X" })),
+    /categoryType "X" is invalid; expected S, N, C, D, or null/
+  );
+  assert.throws(
+    () => normaliseRemoteListing(listing({ categoryType: "OTHER" })),
+    /categoryType "OTHER" is invalid; expected S, N, C, D, or null/
+  );
   assert.throws(() => normaliseRemoteListing(listing({ rawMetadata: [] })), /rawMetadata/);
+});
+
+test("normalises every allowed category and benign nullable variants", () => {
+  for (const categoryType of ["S", "N", "C", "D"]) {
+    assert.equal(normaliseCategoryType(categoryType), categoryType);
+    assert.equal(normaliseRemoteListing(listing({ categoryType })).categoryType, categoryType);
+  }
+
+  for (const categoryType of [undefined, null, "", " \t\r\n ", "null", " NULL ", "&#x20;", "&nbsp;"]) {
+    assert.equal(normaliseCategoryType(categoryType), null);
+    assert.equal(normaliseRemoteListing(listing({ categoryType })).categoryType, null);
+  }
+
+  for (const [categoryType, canonical] of [[" s ", "S"], ["\tn\r\n", "N"], ["&#x20;c&#32;", "C"], ["d", "D"]]) {
+    assert.equal(normaliseCategoryType(categoryType), canonical);
+    assert.equal(normaliseRemoteListing(listing({ categoryType })).categoryType, canonical);
+  }
+
+  assert.equal(normaliseRemoteListing(listing()).categoryType, null);
+  assert.deepEqual(
+    (({ categoryDetected, categoryType }) => ({ categoryDetected, categoryType }))(
+      normaliseRemoteListing(listing({ categoryDetected: true }))
+    ),
+    { categoryDetected: true, categoryType: null }
+  );
+});
+
+test("repairs only persisted OTHER values proven to come from the generic detector", () => {
+  const result = normaliseRemoteListing(listing({
+    categoryDetected: true,
+    categoryType: "OTHER",
+    rawMetadata: {
+      finalCategoryResult: {
+        detected: true,
+        category: "OTHER",
+        detectorRule: "generic_insurance_write_off"
+      }
+    }
+  }));
+  assert.equal(result.categoryDetected, true);
+  assert.equal(result.categoryType, null);
+
+  for (const rawMetadata of [
+    {},
+    { finalCategoryResult: { detected: true, category: "OTHER" } },
+    { finalCategoryResult: { detected: true, category: "OTHER", detectorRule: "unknown_rule" } }
+  ]) {
+    assert.throws(
+      () => normaliseRemoteListing(listing({ categoryDetected: true, categoryType: "OTHER", rawMetadata })),
+      /categoryType "OTHER" is invalid/
+    );
+  }
 });
 
 test("normalises valid category, currency, URLs, and nullable text", () => {

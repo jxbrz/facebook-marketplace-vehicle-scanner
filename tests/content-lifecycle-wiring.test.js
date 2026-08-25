@@ -112,6 +112,14 @@ test("card thumbnail fallback is tied to the exact canonical listing anchor", ()
   assert.doesNotMatch(payload, /sourceListingId: entry\.listingId/);
 });
 
+test("upload category fields use the canonical API projection", () => {
+  const payload = functionSource("buildRemoteListing", "async function postJson");
+  assert.match(payload, /ListingCategoryPipeline\.categoryUploadFields\(result\)/);
+  assert.match(payload, /categoryDetected: uploadCategory\.categoryDetected/);
+  assert.match(payload, /categoryType: uploadCategory\.categoryType/);
+  assert.doesNotMatch(payload, /categoryType: result\?\.category/);
+});
+
 test("Pause cancels run-scoped activity without finalising and Resume uses a fresh token", () => {
   const pause = functionSource("pauseScanByUser", "async function resumeInterruptedScan");
   assert.match(pause, /transition\(lifecycleState, "PAUSE"\)/);
